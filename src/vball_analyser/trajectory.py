@@ -224,7 +224,12 @@ def fit_setting_path(
             if err <= _INLIER_DIST_PX:
                 inliers.append(best_d)
                 diverged_streak = 0
-            elif past_peak and len(inliers) >= 4 and _DEFLECTION_DIST_PX < err < 140.0:
+            elif (
+                past_peak
+                and len(inliers) >= 4
+                and _DEFLECTION_DIST_PX < err < 140.0
+                and math.hypot(best_d.x - inliers[-1].x, best_d.y - inliers[-1].y) >= 3.0
+            ):
                 diverged_streak += 1
                 if diverged_streak >= 2:
                     break
@@ -326,7 +331,12 @@ def fit_setting_path(
             final_inliers.append(best_d)
             final_errs.append(err)
             diverged_streak = 0
-        elif ts >= t_apex_ref and len(final_inliers) >= 4 and _DEFLECTION_DIST_PX < err < 140.0:
+        elif (
+            ts >= t_apex_ref
+            and len(final_inliers) >= 4
+            and _DEFLECTION_DIST_PX < err < 140.0
+            and math.hypot(best_d.x - final_inliers[-1].x, best_d.y - final_inliers[-1].y) >= 3.0
+        ):
             diverged_streak += 1
             if diverged_streak >= 2:
                 deflected = True
@@ -353,7 +363,7 @@ def fit_setting_path(
         best_snap: int | None = None
         best_snap_dist = 85.0
         peak_f_ref = int(round(t_apex_ref * fps))
-        max_forward = 1 if deflected else max(2, int(round(0.32 * fps)))
+        max_forward = max(3, int(round(0.12 * fps))) if deflected else max(2, int(round(0.32 * fps)))
         for cand_frame, cand_pt in candidate_contact_frames:
             if max(release_frame + 4, peak_f_ref, contact_frame - 3) <= cand_frame <= contact_frame + max_forward:
                 px, py = _eval_parabola(refined, cand_frame / fps)
