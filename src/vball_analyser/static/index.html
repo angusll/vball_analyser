@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VBall Analyser — Baseline Set &amp; Hit Studio</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <h1>VBall Analyser</h1>
+      <span class="brand-sub">Baseline Set &amp; Hit Studio</span>
+    </div>
+
+    <div class="toolbar-actions">
+      <button id="openLoadBtn" class="btn btn-primary" type="button">Load Video</button>
+      <select id="sessionSelect" class="select-input" aria-label="Saved sessions"></select>
+      <div id="statusBadge" class="status-pill status-idle">No Video Loaded</div>
+    </div>
+
+    <div class="overlay-toggles" role="group" aria-label="Overlay toggles">
+      <button class="pill active" data-overlay="setArc" type="button">Set Arc</button>
+      <button class="pill active" data-overlay="pose" type="button">Hitter Pose</button>
+      <button class="pill active" data-overlay="contact" type="button">Contact Point</button>
+      <button class="pill active" data-overlay="blockers" type="button">Blockers</button>
+      <button class="pill active" data-overlay="netTape" type="button">Net Tape</button>
+    </div>
+  </header>
+
+  <main class="studio-grid">
+    <section class="stage-column">
+      <div class="calibration-bar">
+        <div class="cal-controls">
+          <button id="calibrateNetBtn" class="btn btn-secondary" type="button">Calibrate Net (2 Clicks)</button>
+          <select id="netHeightSelect" class="select-input" aria-label="Net height">
+            <option value="2.43">Men's Net (2.43m)</option>
+            <option value="2.24">Women's Net (2.24m)</option>
+          </select>
+          <button id="reassignHitterBtn" class="btn btn-secondary" type="button">Reassign Hitter</button>
+        </div>
+        <div id="modeHint" class="mode-hint">Space: Play/Pause • ←/→: Step Frame • 1/2/3: Key Moments</div>
+      </div>
+
+      <div id="videoStage" class="video-stage">
+        <video id="playerVideo" playsinline preload="auto"></video>
+        <canvas id="overlayCanvas"></canvas>
+        <div id="emptyState" class="empty-state">
+          <h2>Load a Baseline Volleyball Video</h2>
+          <p>Drop a short single-play clip or point to an uncut session file on disk to inspect setting path, hitter posture, contact height, and block seams.</p>
+          <button id="emptyLoadBtn" class="btn btn-primary" type="button">Open Video Loader</button>
+        </div>
+      </div>
+
+      <div class="transport-bar">
+        <div class="transport-buttons">
+          <button id="stepBack5Btn" class="btn btn-icon" type="button" title="Back 5 frames">-5f</button>
+          <button id="stepBack1Btn" class="btn btn-icon" type="button" title="Back 1 frame">-1f</button>
+          <button id="playPauseBtn" class="btn btn-primary" type="button">Play</button>
+          <button id="stepFwd1Btn" class="btn btn-icon" type="button" title="Forward 1 frame">+1f</button>
+          <button id="stepFwd5Btn" class="btn btn-icon" type="button" title="Forward 5 frames">+5f</button>
+        </div>
+
+        <input id="seekSlider" class="seek-slider" type="range" min="0" max="1" step="0.001" value="0" aria-label="Video timeline">
+
+        <div class="speed-group">
+          <button class="speed-btn" data-speed="0.25" type="button">0.25x</button>
+          <button class="speed-btn" data-speed="0.5" type="button">0.5x</button>
+          <button class="speed-btn active" data-speed="1" type="button">1x</button>
+          <span id="timeReadout" class="time-readout">0.00s / f0</span>
+        </div>
+      </div>
+
+      <div class="keyframes-strip" id="keyframesStrip">
+        <div class="keyframe-placeholder">Select or load a play to jump to Set Release, Max Load, and Ball Contact.</div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-header">
+          <h2>Detected Plays</h2>
+          <button id="addPlayBtn" class="btn btn-small" type="button">+ Add Here</button>
+        </div>
+        <div id="playsList" class="plays-list"></div>
+      </div>
+
+      <div class="sidebar-section metrics-panel">
+        <h3>Play Mechanics</h3>
+        <dl id="metricsList" class="metrics-grid"></dl>
+      </div>
+
+      <div class="sidebar-section export-panel">
+        <label class="checkbox-row">
+          <input id="freezeContactChk" type="checkbox" checked>
+          <span>1.5s Contact Freeze-Frame</span>
+        </label>
+        <button id="exportMp4Btn" class="btn btn-primary btn-full" type="button">Export Annotated MP4</button>
+        <div id="exportStatus" class="export-status"></div>
+      </div>
+    </aside>
+  </main>
+
+  <dialog id="loadDialog" class="modal-dialog">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Load Baseline Video</h3>
+        <button id="closeLoadBtn" class="btn btn-icon" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <form id="uploadForm" class="modal-block">
+          <label class="field-label" for="videoFileInput">Upload Clip (.mp4, .mov, .mkv, .avi)</label>
+          <input id="videoFileInput" class="file-input" type="file" accept=".mp4,.mov,.mkv,.avi">
+          <button class="btn btn-primary" type="submit">Upload &amp; Analyse</button>
+        </form>
+        <div class="divider">OR</div>
+        <form id="localPathForm" class="modal-block">
+          <label class="field-label" for="localPathInput">Local File Path on Disk (for large uncut recordings)</label>
+          <input id="localPathInput" class="text-input" type="text" placeholder="/mnt/c/Users/Angus/Videos/scrimmage.mp4">
+          <button class="btn btn-secondary" type="submit">Analyse Local File</button>
+        </form>
+        <div id="loadError" class="error-banner"></div>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

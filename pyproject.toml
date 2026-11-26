@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vball-analyser"
+version = "0.1.0"
+description = "Volleyball baseline training analyser with two-pass GPU vision pipeline and interactive canvas review studio"
+readme = "docs/superpowers/specs/2026-11-26-volleyball-training-analyser-design.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "av>=19.0.2",
+    "fastapi>=0.165.0",
+    "lap>=0.5.12",
+    "numpy>=2.5.5",
+    "opencv-python-headless>=5.1.0.95",
+    "pydantic>=2.14.4",
+    "python-multipart>=0.0.34",
+    "scipy>=1.18.1",
+    "ultralytics>=8.4.219",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+vball-analyser = "vball_analyser.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vball_analyser"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.29.0",
+    "pytest>=9.2.0",
+]
