@@ -314,8 +314,12 @@ def detect_serve_events(
         frames = list(iter_video_frames(video_path, start_s=w_start, end_s=w_end))
         if not frames:
             continue
-        balls = predictor.detect_balls(frames, net_cal)
-        tracks = predictor.track_poses(frames, net_cal)
+        combined_fn = getattr(predictor, "detect_balls_and_poses", None)
+        if callable(combined_fn):
+            balls, tracks = combined_fn(frames, net_cal)
+        else:
+            balls = predictor.detect_balls(frames, net_cal)
+            tracks = predictor.track_poses(frames, net_cal)
         series = _select_best_ball_series(balls)
         landings = _find_serve_landing_balls(series, net_center_y=net_center_y, net_tape_y=net_tape_y)
 

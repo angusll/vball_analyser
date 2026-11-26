@@ -322,7 +322,11 @@ def test_yolo_predictor_warmup_and_app_startup_preload(tmp_path: Path) -> None:
             self.name = name
 
         def predict(self, imgs, **kwargs):
-            calls.append((self.name, kwargs))
+            calls.append((f"{self.name}:predict", kwargs))
+            return []
+
+        def track(self, imgs, **kwargs):
+            calls.append((f"{self.name}:track", kwargs))
             return []
 
     pred = YoloGpuPredictor(device="cpu", models_dir=tmp_path)
@@ -331,7 +335,7 @@ def test_yolo_predictor_warmup_and_app_startup_preload(tmp_path: Path) -> None:
     pred._det_resolved = "yolo11m.pt"
     pred._pose_resolved = "yolo11m-pose.pt"
     pred.warmup()
-    assert [name for name, _ in calls] == ["det", "pose"]
+    assert [name for name, _ in calls] == ["det:predict", "pose:track"]
     assert calls[0][1]["imgsz"] == 1280
     assert calls[1][1]["imgsz"] == 1280
 

@@ -8,6 +8,7 @@ import math
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -331,19 +332,57 @@ class YoloGpuPredictor:
             verbose=False,
             **det_kw,
         )
-        pose_model.predict(
+        pose_model.track(
             [dummy],
             device=self.device,
+            persist=True,
+            tracker="bytetrack.yaml",
             imgsz=1280,
             conf=0.25,
             verbose=False,
             **pose_kw,
         )
+        predictor = getattr(pose_model, "predictor", None)
+        if predictor is not None and hasattr(predictor, "trackers"):
+            for tr in predictor.trackers:
+                tr.reset()
         logger.info(
             "Warmed up YOLO11 models on device=%s in %.2fs",
             self.device,
             time.perf_counter() - t0,
         )
+
+    def detect_balls_and_poses(
+        self, frames: list[tuple[int, float, np.ndarray]], calibration: NetCalibration
+    ) -> tuple[list[BallDetection], list[PlayerTrack]]:
+        """Run ball detection and pose tracking concurrently on separate CUDA streams when on GPU."""
+        if not frames:
+            return [], []
+        self._ensure_models()
+        if not self._is_cuda:
+            return self.detect_balls(frames, calibration), self.track_poses(frames, calibration)
+
+        import torch
+
+        s_det = torch.cuda.Stream()
+        s_pose = torch.cuda.Stream()
+
+        def _run_det() -> list[BallDetection]:
+            with torch.cuda.stream(s_det):
+                res = self.detect_balls(frames, calibration)
+            s_det.synchronize()
+            return res
+
+        def _run_pose() -> list[PlayerTrack]:
+            with torch.cuda.stream(s_pose):
+                res = self.track_poses(frames, calibration)
+            s_pose.synchronize()
+            return res
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_det = pool.submit(_run_det)
+            f_pose = pool.submit(_run_pose)
+            return f_det.result(), f_pose.result()
 
     def detect_balls(
         self, frames: list[tuple[int, float, np.ndarray]], calibration: NetCalibration
@@ -796,8 +835,12 @@ def analyse_play_window(
     if not frames:
         raise ValueError(f"No frames decoded in window [{start_s}, {end_s}]")
 
-    ball_dets = predictor.detect_balls(frames, calibration)
-    tracks = predictor.track_poses(frames, calibration)
+    combined_fn = getattr(predictor, "detect_balls_and_poses", None)
+    if callable(combined_fn):
+        ball_dets, tracks = combined_fn(frames, calibration)
+    else:
+        ball_dets = predictor.detect_balls(frames, calibration)
+        tracks = predictor.track_poses(frames, calibration)
 
     # Candidate airborne attacker wrist points near net tape to guide set-arc selection
     from vball_analyser.biomechanics import build_contact_candidates
