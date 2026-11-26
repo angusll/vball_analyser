@@ -79,14 +79,41 @@ def _validate_convex_quad(pts: np.ndarray) -> None:
         raise ValueError("Court calibration corners must form a non-twisted convex quadrilateral.")
 
 
+def normalize_court_calibration(cal: CourtCalibration) -> CourtCalibration:
+    """Sort 4 clicked front-3m corners into (front_left, front_right, attack_right, attack_left) regardless of click order."""
+    pts = [cal.front_left, cal.front_right, cal.attack_right, cal.attack_left]
+    by_y = sorted(pts, key=lambda p: p.y)
+    top_two = sorted(by_y[:2], key=lambda p: p.x)
+    bot_two = sorted(by_y[2:], key=lambda p: p.x)
+    return CourtCalibration(
+        front_left=top_two[0],
+        front_right=top_two[1],
+        attack_right=bot_two[1],
+        attack_left=bot_two[0],
+        is_calibrated=cal.is_calibrated,
+    )
+
+
 def compute_court_homography(cal: CourtCalibration) -> tuple[np.ndarray, np.ndarray]:
     """Compute (H_img_to_court_m, H_court_m_to_img) from the front 3m rectangle."""
-    src = np.array(
+    raw_src = np.array(
         [
             [cal.front_left.x, cal.front_left.y],
             [cal.front_right.x, cal.front_right.y],
             [cal.attack_right.x, cal.attack_right.y],
             [cal.attack_left.x, cal.attack_left.y],
+        ],
+        dtype=np.float32,
+    )
+    _validate_convex_quad(raw_src)
+
+    norm = normalize_court_calibration(cal)
+    src = np.array(
+        [
+            [norm.front_left.x, norm.front_left.y],
+            [norm.front_right.x, norm.front_right.y],
+            [norm.attack_right.x, norm.attack_right.y],
+            [norm.attack_left.x, norm.attack_left.y],
         ],
         dtype=np.float32,
     )

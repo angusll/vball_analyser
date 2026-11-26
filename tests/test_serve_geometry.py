@@ -49,6 +49,18 @@ def test_homography_roundtrip_and_degenerate_quad() -> None:
     with pytest.raises(ValueError):
         compute_court_homography(twisted)
 
+    # Clicking clockwise starting from bottom-left (3m-Left -> Net-Left -> Net-Right -> 3m-Right)
+    # must normalize to the exact same homography as top-left first
+    rotated = CourtCalibration(
+        front_left=Point2D(x=110.0, y=420.0),
+        front_right=Point2D(x=200.0, y=320.0),
+        attack_right=Point2D(x=850.0, y=320.0),
+        attack_left=Point2D(x=940.0, y=420.0),
+    )
+    H_rot, _ = compute_court_homography(rotated)
+    assert project_image_to_court(H_rot, 200.0, 320.0) == pytest.approx((0.0, 0.0), abs=1e-2)
+    assert project_image_to_court(H_rot, 940.0, 420.0) == pytest.approx((9.0, 3.0), abs=1e-2)
+
 
 def test_classify_serve_zones_seams_and_result_invariants() -> None:
     passers = default_passer_formation(3)  # P1(1.8,6.2), P2(4.5,6.5), P3(7.2,6.2)

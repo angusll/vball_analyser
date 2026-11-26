@@ -14,6 +14,7 @@ from vball_analyser.serve_geometry import (
     classify_serve,
     compute_court_homography,
     default_passer_formation,
+    normalize_court_calibration,
 )
 from vball_analyser.storage import validate_safe_id
 
@@ -144,8 +145,9 @@ class ServeSessionStore:
 
     def save_calibration(self, serve_session_id: str, cal: CourtCalibration) -> ServeSession:
         compute_court_homography(cal)
+        norm = normalize_court_calibration(cal)
         session = self.load_session(serve_session_id)
-        session.court_calibration = cal.model_copy(update={"is_calibrated": True})
+        session.court_calibration = norm.model_copy(update={"is_calibrated": True})
         self.save_session(session)
         return session
 

@@ -116,16 +116,16 @@ def test_detects_played_serve_in_seam_and_ignores_subsequent_set(tmp_path: Path)
         p2_frames.append(_make_pose_frame(i, ts, fx, fy))
         p3_frames.append(_make_pose_frame(i, ts, p3_px[0], p3_px[1]))
 
-        # Serve crosses net at frame 15 (t=1.0s), descends to P2's arms at frame 33 (t=2.2s), rebounds up to frame 45
+        # Serve crosses net at frame 15 (t=1.0s), descends to P2's chest/head height (y=310 < net_center_y=370) at frame 33 (t=2.2s), rebounds up
         if 15 <= i <= recv_frame:
             u = (i - 15) / (recv_frame - 15)
             bx = 520.0 + u * (p2_recv_px[0] - 520.0)
-            by = 150.0 + u * ((p2_recv_px[1] - 85.0) - 150.0)
+            by = 150.0 + u * (310.0 - 150.0)
             balls.append(BallDetection(frame_idx=i, timestamp_s=ts, x=bx, y=by, conf=0.9))
         elif recv_frame < i <= 45:
             u = (i - recv_frame) / (45 - recv_frame)
             bx = p2_recv_px[0] + u * 80.0
-            by = (p2_recv_px[1] - 85.0) - u * 180.0
+            by = 310.0 - u * 160.0
             balls.append(BallDetection(frame_idx=i, timestamp_s=ts, x=bx, y=by, conf=0.9))
         # Subsequent set/hit arc at frames 52..68 (t=3.47s..4.53s) — within refractory / same rally
         elif 52 <= i <= 62:

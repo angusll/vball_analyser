@@ -25,6 +25,7 @@ from vball_analyser.models import (
 from vball_analyser.serve_geometry import (
     classify_serve,
     compute_court_homography,
+    normalize_court_calibration,
     project_image_to_court,
 )
 from vball_analyser.video_io import iter_video_frames
@@ -101,6 +102,7 @@ def _select_best_ball_series(detections: list[BallDetection]) -> list[BallDetect
 def _find_serve_landing_balls(
     series: list[BallDetection],
     net_center_y: float,
+    net_tape_y: float | None = None,
     *,
     max_gap_s: float = 0.35,
     min_points: int = 5,
@@ -109,6 +111,7 @@ def _find_serve_landing_balls(
     if len(series) < min_points:
         return []
 
+    tape_y = net_tape_y if net_tape_y is not None else max(0.0, net_center_y - 160.0)
     landings: list[BallDetection] = []
     last_accepted_t = -1e9
     n = len(series)
@@ -135,15 +138,22 @@ def _find_serve_landing_balls(
         descent_px = end_b.y - start_b.y
         descent_dt = end_b.timestamp_s - start_b.timestamp_s
 
-        # Verify serve origin is high (above/near net centerline) and reception/bounce reaches near court
+        # Serve starts high (above/near net) and descends below the net top tape to either
+        # a chest/overhead pass rebound or a floor bounce.
         started_high = start_b.y <= net_center_y + 25.0
-        ended_low = end_b.y >= net_center_y - 10.0
+        has_rebound = (
+            run_end + 1 < n
+            and (series[run_end + 1].timestamp_s - end_b.timestamp_s) <= max_gap_s
+            and series[run_end + 1].y < end_b.y - 2.0
+        )
+        below_tape = end_b.y >= tape_y + 15.0
+        at_floor = end_b.y >= net_center_y - 15.0
 
         if (
             started_high
-            and ended_low
             and descent_px >= MIN_DESCENT_PX
             and descent_dt >= MIN_DESCENT_DURATION_S
+            and ((has_rebound and below_tape) or at_floor)
             and (end_b.timestamp_s - last_accepted_t) >= REFRACTORY_GAP_S
         ):
             landings.append(end_b)
@@ -247,6 +257,7 @@ def _extract_candidate_windows(
     net_cal: NetCalibration,
     predictor: FramePredictor,
     net_center_y: float,
+    net_tape_y: float,
 ) -> list[tuple[float, float]]:
     if metadata.duration_s <= DEFAULT_CONFIG.short_clip_max_sec:
         return [(0.0, metadata.duration_s)]
@@ -254,7 +265,9 @@ def _extract_candidate_windows(
     coarse_frames = list(iter_video_frames(video_path, start_s=0.0, end_s=metadata.duration_s, sample_fps=6.0))
     coarse_balls, _ = predictor.scan_coarse(coarse_frames, net_cal)
     series = _select_best_ball_series(coarse_balls)
-    landings = _find_serve_landing_balls(series, net_center_y=net_center_y, max_gap_s=0.65, min_points=3)
+    landings = _find_serve_landing_balls(
+        series, net_center_y=net_center_y, net_tape_y=net_tape_y, max_gap_s=0.65, min_points=3
+    )
     if not landings:
         return []
 
@@ -280,10 +293,12 @@ def detect_serve_events(
 ) -> list[ServeEvent]:
     """Detect serve events in video_path and project landing spots & passers onto top-down court meters."""
     H, _H_inv = compute_court_homography(calibration)
-    net_cal = _proxy_net_calibration(calibration)
-    net_center_y = 0.5 * (calibration.front_left.y + calibration.front_right.y)
+    norm_cal = normalize_court_calibration(calibration)
+    net_cal = _proxy_net_calibration(norm_cal)
+    net_center_y = 0.5 * (norm_cal.front_left.y + norm_cal.front_right.y)
+    net_tape_y = 0.5 * (net_cal.left_point.y + net_cal.right_point.y)
 
-    windows = _extract_candidate_windows(video_path, metadata, net_cal, predictor, net_center_y)
+    windows = _extract_candidate_windows(video_path, metadata, net_cal, predictor, net_center_y, net_tape_y)
     events: list[ServeEvent] = []
     last_event_t = -1e9
 
@@ -294,7 +309,7 @@ def detect_serve_events(
         balls = predictor.detect_balls(frames, net_cal)
         tracks = predictor.track_poses(frames, net_cal)
         series = _select_best_ball_series(balls)
-        landings = _find_serve_landing_balls(series, net_center_y=net_center_y)
+        landings = _find_serve_landing_balls(series, net_center_y=net_center_y, net_tape_y=net_tape_y)
 
         for land_ball in landings:
             if land_ball.timestamp_s - last_event_t < REFRACTORY_GAP_S:
@@ -315,6 +330,9 @@ def detect_serve_events(
                 sy_m = fy_m
                 raw_result = "in"
             else:
+                # Unplayed bounces must reach floor level (rejects unmatched mid-air sets/spikes)
+                if land_ball.y < net_center_y - 15.0:
+                    continue
                 try:
                     sx_m, sy_m = project_image_to_court(H, land_ball.x, land_ball.y)
                 except ValueError:
