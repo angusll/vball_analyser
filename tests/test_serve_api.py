@@ -148,3 +148,16 @@ def test_serve_session_full_workflow(tmp_path: Path) -> None:
         del_sess = client.post(f"/api/serve-sessions/{sid}/delete", headers=hdr)
         assert del_sess.status_code == 200
         assert client.get(f"/api/serve-sessions/{sid}").status_code == 404
+
+
+def test_index_contains_tabs_and_serves_serve_tab_js(tmp_path: Path) -> None:
+    client, _ = _make_client(tmp_path)
+    with client:
+        html = client.get("/").text
+        assert 'data-tab="studio"' in html
+        assert 'data-tab="serve"' in html
+        assert 'id="serveTab"' in html
+        assert 'id="serveCourtCanvas"' in html
+        assert "/static/serve_tab.js" in html
+        js = client.get("/static/serve_tab.js")
+        assert js.status_code == 200
