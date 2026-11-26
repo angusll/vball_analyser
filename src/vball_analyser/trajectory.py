@@ -118,27 +118,38 @@ def fit_setting_path(
 
     flat_sorted = sorted(cleaned, key=lambda d: (d.frame_idx, -d.conf))
 
-    # Build deterministic sample triplets across frame span
+    # Build temporally local triplets within each 2.4s window so multi-arc rallies
+    # (serve + pass + set) always sample the set arc reliably.
     rng = random.Random(42)
     triplets: list[tuple[BallDetection, BallDetection, BallDetection]] = []
     n = len(flat_sorted)
-    if n <= 35:
-        for i in range(n - 2):
-            for j in range(i + 1, n - 1):
-                if flat_sorted[j].frame_idx <= flat_sorted[i].frame_idx:
-                    continue
-                for k in range(j + 1, n):
-                    if flat_sorted[k].frame_idx <= flat_sorted[j].frame_idx:
-                        continue
-                    if 0.25 <= flat_sorted[k].timestamp_s - flat_sorted[i].timestamp_s <= 2.5:
-                        triplets.append((flat_sorted[i], flat_sorted[j], flat_sorted[k]))
-    if len(triplets) > 450:
-        triplets = rng.sample(triplets, 450)
-    elif not triplets:
-        for _ in range(min(300, n * 10)):
-            sample = sorted(rng.sample(flat_sorted, 3), key=lambda d: d.frame_idx)
-            if sample[0].frame_idx < sample[1].frame_idx < sample[2].frame_idx:
-                triplets.append((sample[0], sample[1], sample[2]))
+    for i in range(n - 2):
+        d0 = flat_sorted[i]
+        window = [
+            flat_sorted[m]
+            for m in range(i + 1, n)
+            if flat_sorted[m].frame_idx > d0.frame_idx
+            and 0.05 <= (flat_sorted[m].timestamp_s - d0.timestamp_s) <= 2.4
+        ]
+        if len(window) < 2:
+            continue
+        # Sample up to 12 local (d1, d2) pairs per anchor d0
+        pairs: list[tuple[BallDetection, BallDetection]] = []
+        w_len = len(window)
+        for a in range(w_len - 1):
+            for b in range(a + 1, w_len):
+                if (
+                    window[b].frame_idx > window[a].frame_idx
+                    and (window[b].timestamp_s - d0.timestamp_s) >= 0.25
+                ):
+                    pairs.append((window[a], window[b]))
+        if len(pairs) > 12:
+            pairs = rng.sample(pairs, 12)
+        for d1, d2 in pairs:
+            triplets.append((d0, d1, d2))
+
+    if len(triplets) > 900:
+        triplets = rng.sample(triplets, 900)
 
     best_score = -1.0
     best_inliers: list[BallDetection] = []
@@ -172,7 +183,7 @@ def fit_setting_path(
             if err <= _INLIER_DIST_PX:
                 inliers.append(best_d)
                 diverged_streak = 0
-            elif past_peak and len(inliers) >= 4 and err > _DEFLECTION_DIST_PX:
+            elif past_peak and len(inliers) >= 4 and _DEFLECTION_DIST_PX < err < 140.0:
                 diverged_streak += 1
                 if diverged_streak >= 2:
                     break
@@ -183,7 +194,26 @@ def fit_setting_path(
         span_s = inliers[-1].timestamp_s - inliers[0].timestamp_s
         if span_s < 0.25:
             continue
-        score = len(inliers) * 10.0 + span_s * 3.0
+
+        # Strongly prefer arcs whose descending branch ends at a jumping attacker's hand
+        contact_bonus = 0.0
+        if candidate_contact_frames:
+            last_f = inliers[-1].frame_idx
+            peak_f_est = int(round(t_apex * fps))
+            max_extrap_f = last_f + int(round(0.35 * fps))
+            best_cand_score = 0.0
+            for cand_f, cand_pt in candidate_contact_frames:
+                if max(peak_f_est, last_f - 3) <= cand_f <= max_extrap_f:
+                    px, py = _eval_parabola(params, cand_f / fps)
+                    dist = math.hypot(cand_pt.x - px, cand_pt.y - py)
+                    if dist < 95.0:
+                        above_tape = max(0.0, tape_y_at(calibration, cand_pt.x) - cand_pt.y)
+                        c_score = 320.0 - 1.5 * dist + 1.5 * above_tape
+                        if c_score > best_cand_score:
+                            best_cand_score = c_score
+            contact_bonus = best_cand_score
+
+        score = len(inliers) * 10.0 + span_s * 3.0 + contact_bonus
         if score > best_score:
             best_score = score
             best_inliers = inliers
@@ -238,7 +268,7 @@ def fit_setting_path(
             final_inliers.append(best_d)
             final_errs.append(err)
             diverged_streak = 0
-        elif ts >= t_apex_ref and len(final_inliers) >= 4 and err > _DEFLECTION_DIST_PX:
+        elif ts >= t_apex_ref and len(final_inliers) >= 4 and _DEFLECTION_DIST_PX < err < 140.0:
             diverged_streak += 1
             if diverged_streak >= 2:
                 deflected = True
@@ -260,12 +290,14 @@ def fit_setting_path(
     release_frame = final_inliers[0].frame_idx
     contact_frame = final_inliers[-1].frame_idx
 
-    # Optional snap to candidate hitter wrist contact frame within [-3, +1] frames & 55px
+    # Optional snap to candidate hitter wrist contact frame (extrapolating brief pre-contact dropout if needed)
     if candidate_contact_frames:
         best_snap: int | None = None
-        best_snap_dist = 55.0
+        best_snap_dist = 85.0
+        peak_f_ref = int(round(t_apex_ref * fps))
+        max_forward = 1 if deflected else max(2, int(round(0.32 * fps)))
         for cand_frame, cand_pt in candidate_contact_frames:
-            if -3 <= (cand_frame - contact_frame) <= 1 and cand_frame > release_frame + 3:
+            if max(release_frame + 4, peak_f_ref, contact_frame - 3) <= cand_frame <= contact_frame + max_forward:
                 px, py = _eval_parabola(refined, cand_frame / fps)
                 dist = math.hypot(cand_pt.x - px, cand_pt.y - py)
                 if dist < best_snap_dist:

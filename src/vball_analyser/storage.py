@@ -7,7 +7,7 @@ import os
 import re
 from pathlib import Path
 
-from vball_analyser.biomechanics import analyse_play_mechanics
+from vball_analyser.biomechanics import analyse_play_mechanics, build_contact_candidates
 from vball_analyser.calibration import classify_attack_zone
 from vball_analyser.models import AnalysisSession, BallDetection, NetCalibration, Point2D
 from vball_analyser.trajectory import fit_setting_path
@@ -139,6 +139,7 @@ class SessionStore:
                     calibration=cal,
                     fps=session.metadata.fps,
                     frame_height=session.metadata.height,
+                    candidate_contact_frames=build_contact_candidates(play.tracks, cal),
                 )
             elif play.set_trajectory is not None:
                 # Recompute peak height using existing arc points

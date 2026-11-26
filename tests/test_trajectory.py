@@ -92,3 +92,38 @@ def test_fit_setting_path_sparse_returns_none() -> None:
         BallDetection(frame_idx=6, timestamp_s=6 / 30.0, x=490, y=215, conf=0.8),
     ]
     assert fit_setting_path(sparse, cal, fps=30.0, frame_height=720) is None
+
+
+def test_fit_setting_path_picks_set_over_longer_serve_and_pass_arcs() -> None:
+    fps = 30.0
+    cal = NetCalibration(left_point=Point2D(x=50.0, y=260.0), right_point=Point2D(x=1020.0, y=260.0))
+    dets: list[BallDetection] = []
+
+    # Arc 1: Serve (24 frames, f=20..44) ending in backcourt (no jumping attacker)
+    for f in range(20, 45):
+        tau = (f - 20) / fps
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=560 - 140 * tau, y=240 - 260 * tau + 400 * tau * tau, conf=0.8))
+
+    # Arc 2: Pass (20 frames, f=55..75)
+    for f in range(55, 76):
+        tau = (f - 55) / fps
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=380 + 240 * tau, y=290 - 420 * tau + 600 * tau * tau, conf=0.8))
+
+    # Arc 3: Set (only 10 observed frames with ceiling-light dropout f=99..112, ending at hitter f=120)
+    # x(t) = 560 - 300*tau, y(t) = 240 - 450*tau + 380*tau^2
+    for f in list(range(90, 99)) + [112, 113, 114]:
+        tau = (f - 90) / fps
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=560 - 300 * tau, y=240 - 450 * tau + 380 * tau * tau, conf=0.7))
+
+    # Stray floor false positive at f=116,117 far from trajectory
+    dets.append(BallDetection(frame_idx=116, timestamp_s=116 / fps, x=410.0, y=490.0, conf=0.35))
+    dets.append(BallDetection(frame_idx=117, timestamp_s=117 / fps, x=405.0, y=488.0, conf=0.35))
+
+    # Airborne attacker contact at f=120 (tau=1.0s -> x=260, y=170)
+    cand_contacts = [(120, Point2D(x=262.0, y=174.0))]
+
+    traj = fit_setting_path(dets, cal, fps=fps, frame_height=576, candidate_contact_frames=cand_contacts)
+    assert traj is not None
+    assert 89 <= traj.release_frame <= 91
+    assert traj.contact_frame == 120
+

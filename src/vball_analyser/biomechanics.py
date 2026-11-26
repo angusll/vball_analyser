@@ -103,7 +103,7 @@ def smooth_pose_tracks(raw_tracks: list[PlayerTrack]) -> list[PlayerTrack]:
 
 
 def _standing_ankle_y(track: PlayerTrack) -> tuple[float, float]:
-    """Return (median_x, 75th_percentile_bottom_y) representing resting floor contact."""
+    """Return (median_x, 90th_percentile_bottom_y) representing resting floor contact."""
     xs: list[float] = []
     ys: list[float] = []
     for pf in track.frames:
@@ -114,7 +114,7 @@ def _standing_ankle_y(track: PlayerTrack) -> tuple[float, float]:
             if idx < len(pf.keypoints) and _kp_valid(pf.keypoints[idx])
         ]
         if ank_ys:
-            ys.append(max(ank_ys))
+            ys.append(max(max(ank_ys), pf.bbox[3] - 4.0))
         else:
             ys.append(pf.bbox[3])
     if not ys:
@@ -122,8 +122,8 @@ def _standing_ankle_y(track: PlayerTrack) -> tuple[float, float]:
     xs_sorted = sorted(xs)
     ys_sorted = sorted(ys)
     x_med = xs_sorted[len(xs_sorted) // 2]
-    y_p75 = ys_sorted[min(len(ys_sorted) - 1, int(0.75 * len(ys_sorted)))]
-    return x_med, y_p75
+    y_p90 = ys_sorted[min(len(ys_sorted) - 1, int(0.90 * len(ys_sorted)))]
+    return x_med, y_p90
 
 
 def classify_court_sides(tracks: list[PlayerTrack], calibration: NetCalibration) -> list[PlayerTrack]:
@@ -131,11 +131,11 @@ def classify_court_sides(tracks: list[PlayerTrack], calibration: NetCalibration)
     span = net_span_px(calibration)
     classified: list[PlayerTrack] = []
     for track in tracks:
-        x_med, y_p75 = _standing_ankle_y(track)
-        # Account for slightly elevated baseline tripod pitch: far-side blockers' feet
-        # project above ~tape_y + 0.20 * net_span_px, near-side players stand below it.
-        net_floor_thresh = tape_y_at(calibration, x_med) + 0.20 * span
-        side = "attacking" if y_p75 >= net_floor_thresh else "blocking"
+        x_med, y_p90 = _standing_ankle_y(track)
+        # Account for elevated baseline tripod pitch: far-side blockers' feet
+        # project above ~tape_y + 0.19 * net_span_px, near-side players stand below it.
+        net_floor_thresh = tape_y_at(calibration, x_med) + 0.19 * span
+        side = "attacking" if y_p90 >= net_floor_thresh else "blocking"
         classified.append(PlayerTrack(track_id=track.track_id, court_side=side, frames=track.frames))
     return classified
 
@@ -187,11 +187,39 @@ def _wrist_points(pf: PoseFrame) -> list[tuple[str, tuple[float, float]]]:
     return out
 
 
-def _apex_frame_of_track(track: PlayerTrack) -> int | None:
+def _apex_frame_of_track(
+    track: PlayerTrack, contact_frame: int | None = None, fps: float = 30.0
+) -> int | None:
     if not track.frames:
         return None
-    best_pf = min(track.frames, key=_upper_body_y)
+    candidates = track.frames
+    if contact_frame is not None:
+        win_lo = contact_frame - max(4, int(round(0.55 * fps)))
+        win_hi = contact_frame + max(4, int(round(0.45 * fps)))
+        windowed = [pf for pf in track.frames if win_lo <= pf.frame_idx <= win_hi]
+        if windowed:
+            candidates = windowed
+    best_pf = min(candidates, key=_upper_body_y)
     return best_pf.frame_idx
+
+
+def _is_symmetric_two_hand_block(pf: PoseFrame) -> bool:
+    """Detect textbook two-arm vertical block pose (both wrists raised high and level)."""
+    if (
+        L_WRIST >= len(pf.keypoints)
+        or R_WRIST >= len(pf.keypoints)
+        or L_SHOULDER >= len(pf.keypoints)
+        or R_SHOULDER >= len(pf.keypoints)
+    ):
+        return False
+    lw, rw = pf.keypoints[L_WRIST], pf.keypoints[R_WRIST]
+    ls, rs = pf.keypoints[L_SHOULDER], pf.keypoints[R_SHOULDER]
+    if not (_kp_valid(lw) and _kp_valid(rw) and _kp_valid(ls) and _kp_valid(rs)):
+        return False
+    sh_y = 0.5 * (ls[1] + rs[1])
+    both_above_shoulders = lw[1] < sh_y - 12.0 and rw[1] < sh_y - 12.0
+    level_wrists = abs(lw[1] - rw[1]) <= 18.0
+    return both_above_shoulders and level_wrists
 
 
 def _find_max_load_frame(track: PlayerTrack, contact_frame: int, fps: float, dominant_hand: str) -> int:
@@ -217,6 +245,36 @@ def _find_max_load_frame(track: PlayerTrack, contact_frame: int, fps: float, dom
                     best_score = score
                     best_frame = pf.frame_idx
     return best_frame
+
+
+def build_contact_candidates(
+    tracks: list[PlayerTrack], calibration: NetCalibration
+) -> list[tuple[int, Point2D]]:
+    """Collect airborne attacking-pose wrist points near/above the net tape."""
+    span = max(1.0, net_span_px(calibration))
+    candidates: list[tuple[int, Point2D]] = []
+    for t in tracks:
+        if len(t.frames) < 4:
+            continue
+        xm, yp90 = _standing_ankle_y(t)
+        if t.court_side != "attacking" and yp90 < tape_y_at(calibration, xm) + 0.165 * span:
+            continue
+        impulse = _jump_impulse_px(t)
+        if impulse < 25.0:
+            continue
+        hips = sorted(_hip_y(pf) for pf in t.frames)
+        baseline_hip = hips[min(len(hips) - 1, int(0.80 * len(hips)))]
+        for pf in t.frames:
+            if baseline_hip - _hip_y(pf) < 0.50 * impulse:
+                continue
+            if _is_symmetric_two_hand_block(pf):
+                continue
+            for w_idx in (L_WRIST, R_WRIST):
+                if w_idx < len(pf.keypoints) and _kp_valid(pf.keypoints[w_idx]):
+                    wx, wy = pf.keypoints[w_idx][0], pf.keypoints[w_idx][1]
+                    if wy <= tape_y_at(calibration, wx) + 12.0:
+                        candidates.append((pf.frame_idx, Point2D(x=wx, y=wy)))
+    return candidates
 
 
 def analyse_play_mechanics(
@@ -245,6 +303,7 @@ def analyse_play_mechanics(
         contact_point = Point2D(x=last_pt.x, y=last_pt.y)
 
     # Select active hitter
+    span = max(1.0, net_span_px(calibration))
     hitter: PlayerTrack | None = None
     if override_hitter_track_id is not None:
         for t in classified:
@@ -252,30 +311,48 @@ def analyse_play_mechanics(
                 hitter = t
                 break
 
-    if hitter is None and attacking:
+    if hitter is None and classified:
+        # Consider attacking tracks first, plus any front-row jumper close to the net floor
+        hitter_pool = [
+            t
+            for t in classified
+            if t.frames
+            and (
+                t.court_side == "attacking"
+                or _standing_ankle_y(t)[1] >= tape_y_at(calibration, _standing_ankle_y(t)[0]) + 0.165 * span
+            )
+        ]
+        if not hitter_pool:
+            hitter_pool = attacking
+
         best_hitter_score = -float("inf")
-        for t in attacking:
+        for t in hitter_pool:
             impulse = _jump_impulse_px(t)
+            xm, yp90 = _standing_ankle_y(t)
+            near_depth_bonus = 0.35 * (yp90 - tape_y_at(calibration, xm))
             wrist_penalty = 0.0
+            block_penalty = 0.0
             if contact_frame is not None and contact_point is not None:
                 pf = _closest_pose_frame(t, contact_frame, max_delta=4)
                 if pf is not None:
                     wrists = _wrist_points(pf)
                     if wrists:
                         min_d = min(math.hypot(w[0] - contact_point.x, w[1] - contact_point.y) for _, w in wrists)
-                        wrist_penalty = 0.7 * min_d
+                        wrist_penalty = 0.85 * min_d
                     else:
                         wrist_penalty = 200.0
+                    if _is_symmetric_two_hand_block(pf):
+                        block_penalty = 55.0
                 else:
                     wrist_penalty = 300.0
-            score = impulse - wrist_penalty
+            score = impulse + near_depth_bonus - wrist_penalty - block_penalty
             if score > best_hitter_score:
                 best_hitter_score = score
                 hitter = t
 
     if contact_frame is None:
         if hitter is not None:
-            contact_frame = _apex_frame_of_track(hitter)
+            contact_frame = _apex_frame_of_track(hitter, None, fps)
         elif set_trajectory is not None:
             contact_frame = set_trajectory.contact_frame
         else:
@@ -290,24 +367,28 @@ def analyse_play_mechanics(
                 _, best_w = min(wrists, key=lambda item: item[1][1])
                 contact_point = Point2D(x=round(best_w[0], 1), y=round(best_w[1], 1))
 
-    # Select setter near release_frame
+    # Select setter near release_frame (prefer attacking/front-row tracks with raised hands near ball)
     setter_track_id: int | None = None
-    span = max(1.0, net_span_px(calibration))
-    if set_trajectory is not None and set_trajectory.arc_points and attacking:
+    if set_trajectory is not None and set_trajectory.arc_points and classified:
         rel_f = set_trajectory.release_frame
         rel_pt = set_trajectory.arc_points[0]
-        best_setter_d = 0.30 * span
-        for t in attacking:
-            if hitter is not None and t.track_id == hitter.track_id and len(attacking) > 1:
+        best_setter_score = 0.30 * span
+        for t in classified:
+            if not t.frames:
                 continue
-            pf = _closest_pose_frame(t, rel_f, max_delta=4)
+            if hitter is not None and t.track_id == hitter.track_id and len(classified) > 1:
+                continue
+            xm, yp90 = _standing_ankle_y(t)
+            if t.court_side != "attacking" and yp90 < tape_y_at(calibration, xm) + 0.165 * span:
+                continue
+            pf = _closest_pose_frame(t, rel_f, max_delta=5)
             if pf is None:
                 continue
             wrists = _wrist_points(pf)
             if wrists:
                 d = min(math.hypot(w[0] - rel_pt.x, w[1] - rel_pt.y) for _, w in wrists)
-                if d < best_setter_d:
-                    best_setter_d = d
+                if d < best_setter_score:
+                    best_setter_score = d
                     setter_track_id = t.track_id
 
     # Compute HitterMetrics
@@ -348,7 +429,7 @@ def analyse_play_mechanics(
                 hy = sum(p[1] for p in hp_pts) / len(hp_pts)
                 torso_tilt = round(abs(math.degrees(math.atan2(sx - hx, -(sy - hy)))), 1)
 
-        apex_f = _apex_frame_of_track(hitter)
+        apex_f = _apex_frame_of_track(hitter, contact_frame, fps)
         apex_delta_ms: int | None = None
         timing_label = "Unknown"
         if apex_f is not None:
@@ -383,8 +464,13 @@ def analyse_play_mechanics(
 
     # Opposing Blockers & Open Seam analysis
     blocker_callouts: list[BlockerCallout] = []
+    hitter_ground_y = _standing_ankle_y(hitter)[1] if hitter is not None else None
     if contact_frame is not None:
-        for bt in blocking:
+        for bt in classified:
+            if not bt.frames:
+                continue
+            if bt.track_id in (hitter_track_id, setter_track_id):
+                continue
             pf_b = _closest_pose_frame(bt, contact_frame, max_delta=3)
             if pf_b is None:
                 continue
@@ -392,13 +478,22 @@ def analyse_play_mechanics(
             if contact_point is not None and abs(b_cx - contact_point.x) > 0.25 * span:
                 continue
 
+            _, b_ground_y = _standing_ankle_y(bt)
+            is_far_side = (
+                bt.court_side == "blocking"
+                or _is_symmetric_two_hand_block(pf_b)
+                or (hitter_ground_y is not None and b_ground_y < hitter_ground_y - 6.0)
+            )
+            if not is_far_side:
+                continue
+
             reach_candidates: list[tuple[float, float]] = [(b_cx, pf_b.bbox[1])]
             for idx in (L_WRIST, R_WRIST, NOSE):
                 if idx < len(pf_b.keypoints) and _kp_valid(pf_b.keypoints[idx]):
                     reach_candidates.append((pf_b.keypoints[idx][0], pf_b.keypoints[idx][1]))
             top_x, top_y = min(reach_candidates, key=lambda pt: pt[1])
-            # Active blocker must elevate near/above the tape
-            if top_y <= tape_y_at(calibration, top_x) + 0.08 * span:
+            # Active blocker must actually jump/reach at or above the net tape
+            if top_y <= tape_y_at(calibration, top_x) + 0.02 * span:
                 r_px, r_cm = height_above_tape(calibration, top_x, top_y)
                 blocker_callouts.append(
                     BlockerCallout(

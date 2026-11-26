@@ -435,17 +435,10 @@ def analyse_play_window(
     ball_dets = predictor.detect_balls(frames, calibration)
     tracks = predictor.track_poses(frames, calibration)
 
-    # Candidate hitter wrist points near net tape to help snap set termination
-    cand_contacts: list[tuple[int, Point2D]] = []
-    for t in tracks:
-        if t.court_side != "attacking":
-            continue
-        for pf in t.frames:
-            for w_idx in (9, 10):
-                if w_idx < len(pf.keypoints) and pf.keypoints[w_idx][2] >= 0.25:
-                    wx, wy = pf.keypoints[w_idx][0], pf.keypoints[w_idx][1]
-                    if wy <= tape_y_at(calibration, wx) + 40.0:
-                        cand_contacts.append((pf.frame_idx, Point2D(x=wx, y=wy)))
+    # Candidate airborne attacker wrist points near net tape to guide set-arc selection
+    from vball_analyser.biomechanics import build_contact_candidates
+
+    cand_contacts = build_contact_candidates(tracks, calibration)
 
     set_traj = fit_setting_path(
         ball_dets,
