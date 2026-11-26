@@ -31,19 +31,24 @@ COCO_EDGES: tuple[tuple[int, int], ...] = (
 )
 
 
-def _draw_top_left_hud(img: np.ndarray, play: PlayAnalysis) -> None:
+def _fmt_height_cm(above_tape_cm: float, net_height_m: float) -> str:
+    total_cm = net_height_m * 100.0 + above_tape_cm
+    return f"{total_cm:.0f}cm ({above_tape_cm:+.0f})"
+
+
+def _draw_top_left_hud(img: np.ndarray, play: PlayAnalysis, cal: NetCalibration) -> None:
     """Render an always-visible translucent Play Mechanics HUD on the top-left corner."""
     traj = play.set_trajectory
     hm = play.hitter_metrics
     blk = play.block_summary
 
     set_peak = (
-        f"{traj.peak_height_cm:+.0f}cm"
+        _fmt_height_cm(traj.peak_height_cm, cal.net_height_m)
         if (traj is not None and traj.peak_height_cm is not None)
         else (f"{traj.peak_height_px:+.0f}px" if traj is not None else "N/A")
     )
     contact_ht = (
-        f"{hm.contact_height_cm:+.0f}cm"
+        _fmt_height_cm(hm.contact_height_cm, cal.net_height_m)
         if (hm is not None and hm.contact_height_cm is not None)
         else (f"{hm.contact_height_px:+.0f}px" if (hm is not None and hm.contact_height_px is not None) else "N/A")
     )
@@ -210,7 +215,7 @@ def draw_play_overlays(
             cv2.line(canvas, (cx, cy), (cx, ty), (21, 204, 250), 2, cv2.LINE_AA)
             if show_inline_stats:
                 h_txt = (
-                    f"+{hm.contact_height_cm:.0f}cm ({hm.contact_height_px:+.0f}px)"
+                    _fmt_height_cm(hm.contact_height_cm, cal.net_height_m)
                     if hm.contact_height_cm is not None
                     else f"{hm.contact_height_px:+.0f}px vs tape"
                 )
@@ -237,7 +242,7 @@ def draw_play_overlays(
                 _draw_badge(canvas, "Open Block Seam", (sx1, sy - 14), (133, 113, 251))
 
     # 5. Always-visible Play Mechanics HUD on top-left
-    _draw_top_left_hud(canvas, play)
+    _draw_top_left_hud(canvas, play, cal)
     return canvas
 
 

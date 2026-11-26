@@ -85,3 +85,9 @@ def test_auto_detect_prefers_top_tape_over_bottom_tape() -> None:
 
     cal = auto_detect_net_tape([frame, frame.copy(), frame.copy()])
     assert abs(tape_y_at(cal, 580.0) - 200.0) <= 6.0
+    assert cal.net_band_px is not None
+    assert abs(cal.net_band_px - 75.0) <= 6.0
+    px_above, cm_above = height_above_tape(cal, 580.0, 125.0)
+    assert px_above == pytest.approx(75.0, abs=6.0)
+    assert cm_above is not None
+    assert abs(cm_above - 100.0) <= 10.0
