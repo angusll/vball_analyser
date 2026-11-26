@@ -595,33 +595,39 @@ function renderOverlay() {
     const traj = play.set_trajectory;
     const vis = traj.arc_points.filter((pt) => pt.frame_idx <= frameIdx);
     if (vis.length >= 2) {
-      const startPt = toCanvasPt(vis[0]);
-      const endPt = toCanvasPt(vis[vis.length - 1]);
+      const canvasPts = vis.map((pt) => toCanvasPt(pt));
+      const startPt = canvasPts[0];
+      const endPt = canvasPts[canvasPts.length - 1];
       const grad = ctx.createLinearGradient(startPt.x, startPt.y, endPt.x, endPt.y);
       grad.addColorStop(0, "#38bdf8");
       grad.addColorStop(1, "#facc15");
+
+      const traceSmoothArc = () => {
+        ctx.beginPath();
+        ctx.moveTo(canvasPts[0].x, canvasPts[0].y);
+        if (canvasPts.length === 2) {
+          ctx.lineTo(canvasPts[1].x, canvasPts[1].y);
+          return;
+        }
+        for (let i = 1; i < canvasPts.length - 1; i++) {
+          const midX = (canvasPts[i].x + canvasPts[i + 1].x) * 0.5;
+          const midY = (canvasPts[i].y + canvasPts[i + 1].y) * 0.5;
+          ctx.quadraticCurveTo(canvasPts[i].x, canvasPts[i].y, midX, midY);
+        }
+        ctx.lineTo(endPt.x, endPt.y);
+      };
 
       ctx.save();
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.strokeStyle = "rgba(2, 6, 23, 0.65)";
       ctx.lineWidth = 5.5;
-      ctx.beginPath();
-      vis.forEach((pt, i) => {
-        const cp = toCanvasPt(pt);
-        if (i === 0) ctx.moveTo(cp.x, cp.y);
-        else ctx.lineTo(cp.x, cp.y);
-      });
+      traceSmoothArc();
       ctx.stroke();
 
       ctx.strokeStyle = grad;
       ctx.lineWidth = 3.2;
-      ctx.beginPath();
-      vis.forEach((pt, i) => {
-        const cp = toCanvasPt(pt);
-        if (i === 0) ctx.moveTo(cp.x, cp.y);
-        else ctx.lineTo(cp.x, cp.y);
-      });
+      traceSmoothArc();
       ctx.stroke();
       ctx.restore();
     }

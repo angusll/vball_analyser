@@ -392,25 +392,23 @@ def fit_setting_path(
     peak_frame = max(release_frame, min(contact_frame, int(round(t_peak * fps))))
     peak_height_px, peak_height_cm = height_above_tape(calibration, peak_x, peak_y)
 
-    # Build smooth frame-by-frame arc points across [release_frame, contact_frame]
+    # Build smooth frame-by-frame arc points evaluated on the refined physical parabola
     inlier_map = {d.frame_idx: d for d in final_inliers}
     arc_points: list[BallDetection] = []
     for f_idx in range(release_frame, contact_frame + 1):
-        if f_idx in inlier_map:
-            arc_points.append(inlier_map[f_idx])
-        else:
-            ts = f_idx / fps
-            px, py = _eval_parabola(refined, ts)
-            arc_points.append(
-                BallDetection(
-                    frame_idx=f_idx,
-                    timestamp_s=round(ts, 4),
-                    x=round(px, 2),
-                    y=round(py, 2),
-                    conf=0.5,
-                    is_interpolated=True,
-                )
+        ts = f_idx / fps
+        px, py = _eval_parabola(refined, ts)
+        obs = inlier_map.get(f_idx)
+        arc_points.append(
+            BallDetection(
+                frame_idx=f_idx,
+                timestamp_s=round(ts, 4),
+                x=round(px, 2),
+                y=round(py, 2),
+                conf=obs.conf if obs is not None else 0.5,
+                is_interpolated=obs is None,
             )
+        )
 
     return SetTrajectory(
         release_frame=release_frame,

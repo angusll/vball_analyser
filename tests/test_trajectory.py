@@ -235,6 +235,10 @@ def test_fit_setting_path_does_not_over_trim_jittered_contact_frame_on_deflectio
     traj = fit_setting_path(dets, cal, fps=fps, frame_height=576, candidate_contact_frames=cand_contacts)
     assert traj is not None
     assert traj.contact_frame == 182
+    # Arc points should lie smoothly on the fitted parabola (constant dx per frame, smooth y)
+    dxs = [b.x - a.x for a, b in zip(traj.arc_points, traj.arc_points[1:], strict=False)]
+    assert max(dxs) - min(dxs) <= 0.1
+
 
 
 
