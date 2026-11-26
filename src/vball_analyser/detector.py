@@ -83,6 +83,53 @@ def _default_batch_size_for_device(device: str) -> int:
     return 4
 
 
+def _find_unique_frame_indices(
+    frames: list[tuple[int, float, np.ndarray]],
+    diff_thresh: float = 0.5,
+) -> tuple[list[int], list[int]]:
+    """Return (unique_frame_positions, frame_pos_to_unique_idx) skipping VFR duplicate frames."""
+    unique_pos: list[int] = []
+    pos_to_unique: list[int] = []
+    last_bgr: np.ndarray | None = None
+    for i, (_fi, _ts, bgr) in enumerate(frames):
+        if last_bgr is None:
+            unique_pos.append(i)
+            pos_to_unique.append(0)
+            last_bgr = bgr
+        else:
+            diff = cv2.absdiff(bgr[::8, ::8], last_bgr[::8, ::8])
+            if float(np.mean(diff)) >= diff_thresh or int(np.count_nonzero(diff >= 25)) >= 12:
+                unique_pos.append(i)
+                pos_to_unique.append(len(unique_pos) - 1)
+                last_bgr = bgr
+            else:
+                pos_to_unique.append(len(unique_pos) - 1)
+    return unique_pos, pos_to_unique
+
+
+def _patch_motion_score(
+    bgr: np.ndarray,
+    ref_bgr: np.ndarray | None,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> float:
+    """Return mean grayscale absdiff inside a box, or +inf when no reference frame exists."""
+    if ref_bgr is None:
+        return float("inf")
+    h, w = bgr.shape[:2]
+    ix1 = max(0, int(x1))
+    iy1 = max(0, int(y1))
+    ix2 = min(w, int(x2))
+    iy2 = min(h, int(y2))
+    if ix2 <= ix1 or iy2 <= iy1:
+        return float("inf")
+    cur_patch = cv2.cvtColor(bgr[iy1:iy2, ix1:ix2], cv2.COLOR_BGR2GRAY)
+    prev_patch = cv2.cvtColor(ref_bgr[iy1:iy2, ix1:ix2], cv2.COLOR_BGR2GRAY)
+    return float(np.mean(cv2.absdiff(cur_patch, prev_patch)))
+
+
 def _detect_high_arc_motion_balls(
     frames: list[tuple[int, float, np.ndarray]],
     calibration: NetCalibration,
@@ -274,13 +321,18 @@ class YoloGpuPredictor:
             return []
         det_model, _ = self._ensure_models()
         infer_kw = self._infer_kwargs(self._det_resolved or self._det_weights)
-        n = len(frames)
-        # Per-frame raw candidates: (ox, oy, x1, y1, x2, y2, conf)
-        per_frame_raw: list[list[tuple[int, int, float, float, float, float, float]]] = [[] for _ in range(n)]
 
-        # 1) Batched full-frame pass at imgsz=1280
-        full_imgs = [item[2] for item in frames]
-        for start in range(0, n, self._batch_size):
+        # Deduplicate near-identical VFR frames so YOLO only runs on visually distinct frames
+        unique_pos, pos_to_unique = _find_unique_frame_indices(frames)
+        unique_frames = [frames[i] for i in unique_pos]
+        n_uniq = len(unique_frames)
+
+        # Per-unique-frame raw candidates: (ox, oy, x1, y1, x2, y2, conf)
+        per_unique_raw: list[list[tuple[int, int, float, float, float, float, float]]] = [[] for _ in range(n_uniq)]
+
+        # 1) Batched full-frame pass at imgsz=1280 on unique frames only
+        full_imgs = [item[2] for item in unique_frames]
+        for start in range(0, n_uniq, self._batch_size):
             batch_imgs = full_imgs[start : start + self._batch_size]
             results = det_model.predict(
                 batch_imgs,
@@ -296,20 +348,27 @@ class YoloGpuPredictor:
                     continue
                 xyxys = r.boxes.xyxy.tolist()
                 confs = r.boxes.conf.tolist()
-                bucket = per_frame_raw[start + offset]
+                bucket = per_unique_raw[start + offset]
                 for box, conf in zip(xyxys, confs, strict=True):
                     bucket.append((0, 0, float(box[0]), float(box[1]), float(box[2]), float(box[3]), float(conf)))
 
-        # 2) Batched overlapping upper-court tiles at imgsz=960 for small high-arc balls
+        # 2) Conditional upper-court tiles at imgsz=960 ONLY on frames lacking a moving high-conf ball
         tile_meta: list[tuple[int, int, int]] = []
         tile_imgs: list[np.ndarray] = []
-        for f_i, (_frame_idx, _ts, bgr) in enumerate(frames):
+        for u_i, (_frame_idx, _ts, bgr) in enumerate(unique_frames):
+            ref_bgr = unique_frames[u_i - 1][2] if u_i > 0 else None
+            has_moving_ball = any(
+                conf >= 0.35 and _patch_motion_score(bgr, ref_bgr, bx1, by1, bx2, by2) >= 2.5
+                for _ox, _oy, bx1, by1, bx2, by2, conf in per_unique_raw[u_i]
+            )
+            if has_moving_ball:
+                continue
             h, w = bgr.shape[:2]
             roi_h = max(64, int(0.76 * h))
             tile_w = int(0.62 * w)
-            tile_meta.append((f_i, 0, 0))
+            tile_meta.append((u_i, 0, 0))
             tile_imgs.append(bgr[:roi_h, :tile_w])
-            tile_meta.append((f_i, w - tile_w, 0))
+            tile_meta.append((u_i, w - tile_w, 0))
             tile_imgs.append(bgr[:roi_h, w - tile_w :])
 
         for start in range(0, len(tile_imgs), self._batch_size):
@@ -324,49 +383,28 @@ class YoloGpuPredictor:
                 verbose=False,
                 **infer_kw,
             )
-            for (f_i, ox, oy), r in zip(batch_meta, results, strict=True):
+            for (u_i, ox, oy), r in zip(batch_meta, results, strict=True):
                 if r.boxes is None or len(r.boxes) == 0:
                     continue
                 xyxys = r.boxes.xyxy.tolist()
                 confs = r.boxes.conf.tolist()
-                bucket = per_frame_raw[f_i]
+                bucket = per_unique_raw[u_i]
                 for box, conf in zip(xyxys, confs, strict=True):
                     bucket.append((ox, oy, float(box[0]), float(box[1]), float(box[2]), float(box[3]), float(conf)))
 
-        # 3) Lazy crop-only motion damping (aware of duplicate frames) + spatial NMS merge within 18px
-        detections: list[BallDetection] = []
-        existing_by_frame: dict[int, list[tuple[float, float]]] = {}
-        last_distinct_bgr: np.ndarray | None = None
-        prev_distinct_bgr: np.ndarray | None = None
-        for f_i, (frame_idx, ts, bgr) in enumerate(frames):
-            if last_distinct_bgr is None:
-                last_distinct_bgr = bgr
-            else:
-                frame_diff = float(np.mean(cv2.absdiff(bgr[::8, ::8], last_distinct_bgr[::8, ::8])))
-                if frame_diff >= 0.5:
-                    prev_distinct_bgr = last_distinct_bgr
-                    last_distinct_bgr = bgr
-            ref_bgr = prev_distinct_bgr
-
-            raw_cands = per_frame_raw[f_i]
+        # 3) Crop-only motion damping against prior unique frame + spatial NMS within 18px
+        unique_kept: list[list[tuple[float, float, float]]] = [[] for _ in range(n_uniq)]
+        for u_i, (_frame_idx, _ts, bgr) in enumerate(unique_frames):
+            raw_cands = per_unique_raw[u_i]
             if not raw_cands:
                 continue
-            h, w = bgr.shape[:2]
+            ref_bgr = unique_frames[u_i - 1][2] if u_i > 0 else None
             frame_cands: list[tuple[float, float, float]] = []
             for ox, oy, bx1, by1, bx2, by2, conf in raw_cands:
                 cx = ox + 0.5 * (bx1 + bx2)
                 cy = oy + 0.5 * (by1 + by2)
-                if ref_bgr is not None:
-                    x1 = max(0, int(ox + bx1))
-                    y1 = max(0, int(oy + by1))
-                    x2 = min(w, int(ox + bx2))
-                    y2 = min(h, int(oy + by2))
-                    if x2 > x1 and y2 > y1:
-                        cur_patch = cv2.cvtColor(bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
-                        prev_patch = cv2.cvtColor(ref_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
-                        m_score = float(np.mean(cv2.absdiff(cur_patch, prev_patch)))
-                        if m_score < 2.5:
-                            conf *= 0.25
+                if _patch_motion_score(bgr, ref_bgr, ox + bx1, oy + by1, ox + bx2, oy + by2) < 2.5:
+                    conf *= 0.25
                 frame_cands.append((cx, cy, conf))
 
             frame_cands.sort(key=lambda c: -c[2])
@@ -374,19 +412,45 @@ class YoloGpuPredictor:
             for cx, cy, conf in frame_cands:
                 if all(math.hypot(cx - kx, cy - ky) > 18.0 for kx, ky, _ in kept):
                     kept.append((cx, cy, conf))
-                    existing_by_frame.setdefault(frame_idx, []).append((cx, cy))
-                    detections.append(
-                        BallDetection(
-                            frame_idx=frame_idx,
-                            timestamp_s=round(ts, 4),
-                            x=round(cx, 2),
-                            y=round(cy, 2),
-                            conf=round(conf, 3),
-                        )
-                    )
+            unique_kept[u_i] = kept
 
-        # 4) Supplement high-arc dropouts above the net tape against bright gym walls/lights
-        detections.extend(_detect_high_arc_motion_balls(frames, calibration, existing_by_frame))
+        # Expand unique-frame YOLO detections back to all frame indices (including VFR duplicates)
+        detections: list[BallDetection] = []
+        existing_by_unique_frame: dict[int, list[tuple[float, float]]] = {}
+        for u_i, (u_frame_idx, _u_ts, _u_bgr) in enumerate(unique_frames):
+            if unique_kept[u_i]:
+                existing_by_unique_frame[u_frame_idx] = [(cx, cy) for cx, cy, _ in unique_kept[u_i]]
+
+        for f_i, (frame_idx, ts, _bgr) in enumerate(frames):
+            for cx, cy, conf in unique_kept[pos_to_unique[f_i]]:
+                detections.append(
+                    BallDetection(
+                        frame_idx=frame_idx,
+                        timestamp_s=round(ts, 4),
+                        x=round(cx, 2),
+                        y=round(cy, 2),
+                        conf=round(conf, 3),
+                    )
+                )
+
+        # 4) Supplement high-arc dropouts above the net tape on unique frames and expand to duplicates
+        motion_unique = _detect_high_arc_motion_balls(unique_frames, calibration, existing_by_unique_frame)
+        motion_by_uframe: dict[int, list[BallDetection]] = {}
+        for md in motion_unique:
+            motion_by_uframe.setdefault(md.frame_idx, []).append(md)
+        for f_i, (frame_idx, ts, _bgr) in enumerate(frames):
+            u_frame_idx = unique_frames[pos_to_unique[f_i]][0]
+            for md in motion_by_uframe.get(u_frame_idx, []):
+                detections.append(
+                    BallDetection(
+                        frame_idx=frame_idx,
+                        timestamp_s=round(ts, 4),
+                        x=md.x,
+                        y=md.y,
+                        conf=md.conf,
+                    )
+                )
+
         detections.sort(key=lambda d: (d.frame_idx, -d.conf))
         return detections
 
@@ -404,9 +468,16 @@ class YoloGpuPredictor:
             for tr in predictor.trackers:
                 tr.reset()
 
-        tracks_map: dict[int, list[PoseFrame]] = {}
-        for start in range(0, len(frames), self._batch_size):
-            batch = frames[start : start + self._batch_size]
+        # Deduplicate near-identical VFR frames before running pose inference + ByteTrack
+        unique_pos, pos_to_unique = _find_unique_frame_indices(frames)
+        unique_frames = [frames[i] for i in unique_pos]
+        n_uniq = len(unique_frames)
+
+        unique_poses: list[list[tuple[int, tuple[float, float, float, float], list[tuple[float, float, float]]]]] = [
+            [] for _ in range(n_uniq)
+        ]
+        for start in range(0, n_uniq, self._batch_size):
+            batch = unique_frames[start : start + self._batch_size]
             imgs = [item[2] for item in batch]
             results = pose_model.track(
                 imgs,
@@ -418,13 +489,14 @@ class YoloGpuPredictor:
                 verbose=False,
                 **infer_kw,
             )
-            for (frame_idx, ts, _bgr), r in zip(batch, results, strict=True):
+            for offset, r in enumerate(results):
                 if r.boxes is None or r.keypoints is None or r.boxes.id is None:
                     continue
                 ids = r.boxes.id.int().tolist()
                 boxes = r.boxes.xyxy.tolist()
                 kps_xy = r.keypoints.xy.tolist()
                 kps_conf = r.keypoints.conf.tolist() if r.keypoints.conf is not None else None
+                bucket = unique_poses[start + offset]
                 for i, tid in enumerate(ids):
                     bbox = (
                         round(float(boxes[i][0]), 1),
@@ -436,9 +508,14 @@ class YoloGpuPredictor:
                     for k_i, (kx, ky) in enumerate(kps_xy[i]):
                         kc = float(kps_conf[i][k_i]) if kps_conf is not None else 0.8
                         pts.append((round(float(kx), 1), round(float(ky), 1), round(kc, 3)))
-                    tracks_map.setdefault(int(tid), []).append(
-                        PoseFrame(frame_idx=frame_idx, timestamp_s=round(ts, 4), bbox=bbox, keypoints=pts)
-                    )
+                    bucket.append((int(tid), bbox, pts))
+
+        tracks_map: dict[int, list[PoseFrame]] = {}
+        for f_i, (frame_idx, ts, _bgr) in enumerate(frames):
+            for tid, bbox, pts in unique_poses[pos_to_unique[f_i]]:
+                tracks_map.setdefault(tid, []).append(
+                    PoseFrame(frame_idx=frame_idx, timestamp_s=round(ts, 4), bbox=bbox, keypoints=pts)
+                )
 
         raw = [PlayerTrack(track_id=tid, court_side="attacking", frames=pfs) for tid, pfs in sorted(tracks_map.items())]
         return classify_court_sides(raw, calibration)
