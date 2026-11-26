@@ -83,6 +83,79 @@ def _default_batch_size_for_device(device: str) -> int:
     return 4
 
 
+def _detect_high_arc_motion_balls(
+    frames: list[tuple[int, float, np.ndarray]],
+    calibration: NetCalibration,
+    existing_by_frame: dict[int, list[tuple[float, float]]],
+) -> list[BallDetection]:
+    """Recover compact moving ball blobs strictly above the net tape when YOLO drops out."""
+    if len(frames) < 12:
+        return []
+    h, w = frames[0][2].shape[:2]
+    upper_y = min(h, int(min(calibration.left_point.y, calibration.right_point.y) - 10.0))
+    if upper_y < 40 or w < 64:
+        return []
+
+    # Sample up to 25 evenly spaced frames to build a clean static upper-wall background
+    step = max(1, len(frames) // 25)
+    sample_rois = [frames[i][2][:upper_y] for i in range(0, len(frames), step)][:25]
+    if len(sample_rois) < 6:
+        return []
+    bg = np.median(np.stack(sample_rois, axis=0), axis=0).astype(np.uint8)
+
+    # Skip supplement on handheld/panning cameras where the upper background shifts heavily
+    bg_diffs = [float(np.mean(cv2.absdiff(roi[::4, ::4], bg[::4, ::4]))) for roi in sample_rois]
+    if float(np.median(bg_diffs)) > 6.0:
+        return []
+
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    extra: list[BallDetection] = []
+    for frame_idx, ts, bgr in frames:
+        diff = cv2.absdiff(bgr[:upper_y], bg)
+        gray_d = np.max(diff, axis=2)
+        _, mask = cv2.threshold(gray_d, 22, 255, cv2.THRESH_BINARY)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+
+        existing = existing_by_frame.get(frame_idx, [])
+        frame_blobs: list[tuple[float, float, float]] = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if not (30.0 <= area <= 1000.0):
+                continue
+            bx, by, bw, bh = cv2.boundingRect(cnt)
+            if bw <= 0 or bh <= 0:
+                continue
+            aspect = max(bw, bh) / float(min(bw, bh))
+            if aspect > 2.2:
+                continue
+            fill = area / float(bw * bh)
+            if fill < 0.35:
+                continue
+            cx = bx + 0.5 * bw
+            cy = by + 0.5 * bh
+            if any(math.hypot(cx - ex, cy - ey) <= 18.0 for ex, ey in existing):
+                continue
+            # Prefer compact, ball-sized blobs (higher fill & closer to 1:1 aspect)
+            quality = fill / aspect
+            frame_blobs.append((quality, cx, cy))
+
+        frame_blobs.sort(key=lambda item: -item[0])
+        for _q, cx, cy in frame_blobs[:4]:
+            extra.append(
+                BallDetection(
+                    frame_idx=frame_idx,
+                    timestamp_s=round(ts, 4),
+                    x=round(cx, 2),
+                    y=round(cy, 2),
+                    conf=0.28,
+                )
+            )
+    return extra
+
+
 class YoloGpuPredictor:
     """Lazy-loading YOLO11 + ByteTrack predictor with cross-platform GPU auto-detection (CUDA/XPU/MPS/CPU)."""
 
@@ -197,7 +270,6 @@ class YoloGpuPredictor:
     def detect_balls(
         self, frames: list[tuple[int, float, np.ndarray]], calibration: NetCalibration
     ) -> list[BallDetection]:
-        del calibration
         if not frames:
             return []
         det_model, _ = self._ensure_models()
@@ -261,26 +333,37 @@ class YoloGpuPredictor:
                 for box, conf in zip(xyxys, confs, strict=True):
                     bucket.append((ox, oy, float(box[0]), float(box[1]), float(box[2]), float(box[3]), float(conf)))
 
-        # 3) Lazy crop-only motion damping + spatial NMS merge within 18px
+        # 3) Lazy crop-only motion damping (aware of duplicate frames) + spatial NMS merge within 18px
         detections: list[BallDetection] = []
+        existing_by_frame: dict[int, list[tuple[float, float]]] = {}
+        last_distinct_bgr: np.ndarray | None = None
+        prev_distinct_bgr: np.ndarray | None = None
         for f_i, (frame_idx, ts, bgr) in enumerate(frames):
+            if last_distinct_bgr is None:
+                last_distinct_bgr = bgr
+            else:
+                frame_diff = float(np.mean(cv2.absdiff(bgr[::8, ::8], last_distinct_bgr[::8, ::8])))
+                if frame_diff >= 0.5:
+                    prev_distinct_bgr = last_distinct_bgr
+                    last_distinct_bgr = bgr
+            ref_bgr = prev_distinct_bgr
+
             raw_cands = per_frame_raw[f_i]
             if not raw_cands:
                 continue
             h, w = bgr.shape[:2]
-            prev_bgr = frames[f_i - 1][2] if f_i > 0 else None
             frame_cands: list[tuple[float, float, float]] = []
             for ox, oy, bx1, by1, bx2, by2, conf in raw_cands:
                 cx = ox + 0.5 * (bx1 + bx2)
                 cy = oy + 0.5 * (by1 + by2)
-                if prev_bgr is not None:
+                if ref_bgr is not None:
                     x1 = max(0, int(ox + bx1))
                     y1 = max(0, int(oy + by1))
                     x2 = min(w, int(ox + bx2))
                     y2 = min(h, int(oy + by2))
                     if x2 > x1 and y2 > y1:
                         cur_patch = cv2.cvtColor(bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
-                        prev_patch = cv2.cvtColor(prev_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+                        prev_patch = cv2.cvtColor(ref_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
                         m_score = float(np.mean(cv2.absdiff(cur_patch, prev_patch)))
                         if m_score < 2.5:
                             conf *= 0.25
@@ -291,6 +374,7 @@ class YoloGpuPredictor:
             for cx, cy, conf in frame_cands:
                 if all(math.hypot(cx - kx, cy - ky) > 18.0 for kx, ky, _ in kept):
                     kept.append((cx, cy, conf))
+                    existing_by_frame.setdefault(frame_idx, []).append((cx, cy))
                     detections.append(
                         BallDetection(
                             frame_idx=frame_idx,
@@ -300,6 +384,10 @@ class YoloGpuPredictor:
                             conf=round(conf, 3),
                         )
                     )
+
+        # 4) Supplement high-arc dropouts above the net tape against bright gym walls/lights
+        detections.extend(_detect_high_arc_motion_balls(frames, calibration, existing_by_frame))
+        detections.sort(key=lambda d: (d.frame_idx, -d.conf))
         return detections
 
     def track_poses(

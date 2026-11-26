@@ -68,3 +68,20 @@ def test_auto_detect_fallback_on_blank_frames() -> None:
     cal = auto_detect_net_tape(blank)
     assert cal.left_point.x < cal.right_point.x
     assert not cal.is_manual
+
+
+def test_auto_detect_prefers_top_tape_over_bottom_tape() -> None:
+    import cv2
+
+    h, w = 576, 1168
+    frame = np.full((h, w, 3), 135, dtype=np.uint8)
+    # Top tape at y=200, bottom tape at y=275, vertical net mesh strictly between them
+    cv2.line(frame, (180, 200), (980, 200), (235, 235, 235), 4)
+    cv2.line(frame, (180, 275), (980, 275), (240, 240, 240), 4)
+    for x in range(184, 980, 10):
+        cv2.line(frame, (x, 204), (x, 271), (55, 55, 55), 1)
+    for y in range(210, 270, 10):
+        cv2.line(frame, (180, y), (980, y), (75, 75, 75), 1)
+
+    cal = auto_detect_net_tape([frame, frame.copy(), frame.copy()])
+    assert abs(tape_y_at(cal, 580.0) - 200.0) <= 6.0

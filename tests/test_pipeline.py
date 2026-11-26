@@ -182,3 +182,26 @@ def test_predictor_device_batch_defaults_and_weight_resolution(tmp_path: Path) -
     assert calls == [str(mlpkg), str(pt)]
     assert resolved == str(pt)
     assert model == f"loaded:{pt}:detect"
+
+
+def test_detect_high_arc_motion_balls_recovers_above_net_dropouts() -> None:
+    import cv2
+    import numpy as np
+    from vball_analyser.detector import _detect_high_arc_motion_balls
+    from vball_analyser.models import NetCalibration
+
+    cal = NetCalibration(left_point=Point2D(x=180.0, y=220.0), right_point=Point2D(x=980.0, y=220.0), is_manual=True)
+    frames = []
+    for f in range(16):
+        img = np.full((480, 960, 3), 210, dtype=np.uint8)
+        bx = int(600 - f * 20)
+        by = int(150 - 8 * f + 0.5 * f * f)
+        cv2.circle(img, (bx, by), 9, (40, 210, 235), -1)
+        frames.append((f, f / 30.0, img))
+
+    extra = _detect_high_arc_motion_balls(frames, cal, existing_by_frame={})
+    assert len(extra) >= 12
+    by_f = {d.frame_idx: d for d in extra}
+    assert 8 in by_f
+    assert abs(by_f[8].x - (600 - 8 * 20)) <= 4.0
+    assert abs(by_f[8].y - (150 - 8 * 8 + 0.5 * 64)) <= 4.0

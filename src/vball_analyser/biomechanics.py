@@ -264,16 +264,23 @@ def build_contact_candidates(
             continue
         hips = sorted(_hip_y(pf) for pf in t.frames)
         baseline_hip = hips[min(len(hips) - 1, int(0.80 * len(hips)))]
+        wrist_margin = max(18.0, 0.035 * span)
         for pf in t.frames:
             if baseline_hip - _hip_y(pf) < 0.50 * impulse:
                 continue
             if _is_symmetric_two_hand_block(pf):
                 continue
+            added_wrist = False
             for w_idx in (L_WRIST, R_WRIST):
                 if w_idx < len(pf.keypoints) and _kp_valid(pf.keypoints[w_idx]):
                     wx, wy = pf.keypoints[w_idx][0], pf.keypoints[w_idx][1]
-                    if wy <= tape_y_at(calibration, wx) + 12.0:
+                    if wy <= tape_y_at(calibration, wx) + wrist_margin:
                         candidates.append((pf.frame_idx, Point2D(x=wx, y=wy)))
+                        added_wrist = True
+            if not added_wrist:
+                bx_mid = 0.5 * (pf.bbox[0] + pf.bbox[2])
+                if pf.bbox[1] <= tape_y_at(calibration, bx_mid):
+                    candidates.append((pf.frame_idx, Point2D(x=bx_mid, y=pf.bbox[1])))
     return candidates
 
 

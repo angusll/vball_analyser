@@ -95,6 +95,8 @@ def auto_detect_net_tape(
     y_min = max(10, int(0.20 * h))
     y_max = min(h - 10, int(0.68 * h))
     roi = gray[y_min:y_max, :]
+    sobel_x = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+    mesh_offsets = np.arange(12, 48, 6)
 
     # Enhance horizontal bright tape contrast against darker net/background
     blur_v = cv2.GaussianBlur(roi, (1, 21), 0)
@@ -182,8 +184,16 @@ def auto_detect_net_tape(
         contrast = float(np.mean(tape_vals - 0.5 * (above_vals + below_vals)))
         brightness = float(np.mean(tape_vals))
 
+        # Net top tape sits directly above high-frequency vertical net mesh, whereas
+        # the bottom tape has net mesh above it and open court below.
+        ys_below = np.clip(ys[:, None] + mesh_offsets[None, :], 0, h - 1)
+        ys_above = np.clip(ys[:, None] - mesh_offsets[None, :], 0, h - 1)
+        tex_below = float(np.mean(sobel_x[ys_below, xi[:, None]]))
+        tex_above = float(np.mean(sobel_x[ys_above, xi[:, None]]))
+        mesh_asym = max(-35.0, min(45.0, tex_below - tex_above))
+
         center_y = float(m * (0.5 * w) + b_centered)
-        center_prior = 1.0 - min(1.0, abs(center_y - 0.44 * h) / (0.30 * h))
+        center_prior = 1.0 - min(1.0, abs(center_y - 0.42 * h) / (0.30 * h))
 
         person_bonus = 0.0
         if person_boxes:
@@ -193,7 +203,15 @@ def auto_detect_net_tape(
                 if by1 - 20 <= ly_at_b <= by2:
                     person_bonus += 15.0
 
-        score = (span / w) * 100.0 + max(0.0, contrast) * 1.4 + brightness * 0.25 + center_prior * 20.0 + person_bonus + min(40.0, total_len / w * 20.0)
+        score = (
+            (span / w) * 100.0
+            + max(0.0, contrast) * 1.4
+            + brightness * 0.25
+            + center_prior * 20.0
+            + mesh_asym * 1.5
+            + person_bonus
+            + min(40.0, total_len / w * 20.0)
+        )
         if score > best_score and contrast > 8.0:
             best_score = score
             best_line = (float(m), b_centered)

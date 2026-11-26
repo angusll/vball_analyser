@@ -127,3 +127,46 @@ def test_fit_setting_path_picks_set_over_longer_serve_and_pass_arcs() -> None:
     assert 89 <= traj.release_frame <= 91
     assert traj.contact_frame == 120
 
+
+def test_fit_setting_path_rejects_vertical_toss_duplicates_and_low_conf_bridge() -> None:
+    fps = 30.0
+    cal = NetCalibration(
+        left_point=Point2D(x=240.0, y=200.0),
+        right_point=Point2D(x=910.0, y=200.0),
+        is_manual=True,
+    )
+    dets: list[BallDetection] = []
+
+    # 1. Nearly-vertical server toss with duplicate VFR frames below net tape (f=43..61)
+    for f in range(43, 62):
+        step = (f - 43) // 2
+        dets.append(
+            BallDetection(
+                frame_idx=f,
+                timestamp_s=f / fps,
+                x=380.0 + 0.3 * step,
+                y=248.0 - 4.0 * step + 0.4 * step * step,
+                conf=0.65,
+            )
+        )
+
+    # 2. Low-confidence motion-damped static FP bridged to a falling serve (f=81 + f=88..92)
+    dets.append(BallDetection(frame_idx=81, timestamp_s=81 / fps, x=327.0, y=308.0, conf=0.04))
+    for f, yv in [(88, 163.0), (89, 163.0), (90, 185.0), (91, 186.0), (92, 215.0)]:
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=376.0 + (f - 88), y=yv, conf=0.55))
+
+    # 3. True high set arc from setter (625, 220) to left outside hitter (250, 140) across f=142..178
+    for f in range(142, 179, 2):
+        tau = (f - 142) / fps
+        bx = 625.0 - 310.0 * tau
+        by = 220.0 - 520.0 * tau + 380.0 * tau * tau
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=bx, y=by, conf=0.45))
+
+    cand_contacts = [(178, Point2D(x=252.0, y=145.0))]
+    traj = fit_setting_path(dets, cal, fps=fps, frame_height=576, candidate_contact_frames=cand_contacts)
+    assert traj is not None
+    assert 141 <= traj.release_frame <= 144
+    assert 176 <= traj.contact_frame <= 180
+    assert traj.peak_point.y < 100.0
+
+
