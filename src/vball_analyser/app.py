@@ -72,6 +72,7 @@ class ReassignHitterRequest(BaseModel):
 
 class ExportPlayRequest(BaseModel):
     freeze_contact: bool = True
+    show_inline_stats: bool = True
 
 
 def _set_session_cookie(response: Response, cookie_val: str, ttl_seconds: int) -> None:
@@ -546,11 +547,17 @@ def create_app(
         if play is None:
             raise HTTPException(status_code=404, detail="Play not found.")
 
-        export_name = f"{safe_pid}_{'freeze' if body.freeze_contact else 'plain'}.mp4"
+        export_name = f"{safe_pid}_{'freeze' if body.freeze_contact else 'plain'}{'' if body.show_inline_stats else '_clean'}.mp4"
         out_path = (sdir / "exports" / export_name).resolve()
         freeze_s = 1.5 if body.freeze_contact else 0.0
         await asyncio.to_thread(
-            export_annotated_play_mp4, video_path, play, session.calibration, out_path, freeze_s
+            export_annotated_play_mp4,
+            video_path,
+            play,
+            session.calibration,
+            out_path,
+            freeze_s,
+            body.show_inline_stats,
         )
         return JSONResponse(
             {

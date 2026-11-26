@@ -131,6 +131,7 @@ def draw_play_overlays(
     frame_idx: int,
     play: PlayAnalysis,
     cal: NetCalibration,
+    show_inline_stats: bool = True,
 ) -> np.ndarray:
     """Render clean baseline court overlays onto a copy of a single BGR frame."""
     canvas = bgr.copy()
@@ -165,7 +166,7 @@ def draw_play_overlays(
         for idx, pt in enumerate(visible):
             if idx % 4 == 0 or idx == len(visible) - 1:
                 cv2.circle(canvas, (int(round(pt.x)), int(round(pt.y))), 4, (248, 224, 71), -1, cv2.LINE_AA)
-        if frame_idx >= traj.peak_frame:
+        if show_inline_stats and frame_idx >= traj.peak_frame:
             _draw_badge(
                 canvas,
                 f"Set Arc {traj.tempo_s:.2f}s",
@@ -207,19 +208,20 @@ def draw_play_overlays(
             ty = int(round(tape_y_at(cal, hm.contact_point.x)))
             cv2.circle(canvas, (cx, cy), 11, (21, 204, 250), 2, cv2.LINE_AA)
             cv2.line(canvas, (cx, cy), (cx, ty), (21, 204, 250), 2, cv2.LINE_AA)
-            h_txt = (
-                f"+{hm.contact_height_cm:.0f}cm ({hm.contact_height_px:+.0f}px)"
-                if hm.contact_height_cm is not None
-                else f"{hm.contact_height_px:+.0f}px vs tape"
-            )
-            _draw_badge(canvas, h_txt, (cx + 16, cy), (21, 204, 250))
-            if hm.arm_extension_deg is not None:
-                _draw_badge(
-                    canvas,
-                    f"Arm {hm.arm_extension_deg:.0f} deg | {hm.jump_timing_label}",
-                    (cx + 16, cy + 28),
-                    (128, 222, 74),
+            if show_inline_stats:
+                h_txt = (
+                    f"+{hm.contact_height_cm:.0f}cm ({hm.contact_height_px:+.0f}px)"
+                    if hm.contact_height_cm is not None
+                    else f"{hm.contact_height_px:+.0f}px vs tape"
                 )
+                _draw_badge(canvas, h_txt, (cx + 16, cy), (21, 204, 250))
+                if hm.arm_extension_deg is not None:
+                    _draw_badge(
+                        canvas,
+                        f"Arm {hm.arm_extension_deg:.0f} deg | {hm.jump_timing_label}",
+                        (cx + 16, cy + 28),
+                        (128, 222, 74),
+                    )
 
         # Opposing blockers & seam
         for blk in play.block_summary.blockers:
@@ -231,7 +233,8 @@ def draw_play_overlays(
             sx1, sx2 = [int(round(v)) for v in play.block_summary.seam_interval_x]
             sy = int(round(tape_y_at(cal, 0.5 * (sx1 + sx2)) - 14))
             cv2.line(canvas, (sx1, sy), (sx2, sy), (133, 113, 251), 3, cv2.LINE_AA)
-            _draw_badge(canvas, "Open Block Seam", (sx1, sy - 14), (133, 113, 251))
+            if show_inline_stats:
+                _draw_badge(canvas, "Open Block Seam", (sx1, sy - 14), (133, 113, 251))
 
     # 5. Always-visible Play Mechanics HUD on top-left
     _draw_top_left_hud(canvas, play)
@@ -244,6 +247,7 @@ def export_annotated_play_mp4(
     calibration: NetCalibration,
     out_path: Path,
     freeze_at_contact_s: float = 1.5,
+    show_inline_stats: bool = True,
 ) -> Path:
     """Render an annotated H.264 MP4 clip for a play with optional contact freeze-frame."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,7 +277,9 @@ def export_annotated_play_mp4(
 
         pts = 0
         for idx, (frame_idx, _ts, bgr) in enumerate(frames):
-            annotated = draw_play_overlays(bgr, frame_idx, play, calibration)
+            annotated = draw_play_overlays(
+                bgr, frame_idx, play, calibration, show_inline_stats=show_inline_stats
+            )
             if annotated.shape[1] != out_w or annotated.shape[0] != out_h:
                 annotated = annotated[:out_h, :out_w]
 
