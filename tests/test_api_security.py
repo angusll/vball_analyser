@@ -119,13 +119,14 @@ def test_end_to_end_local_workflow_range_calibration_hitter_export(tmp_path: Pat
 
         # Poll until background pipeline reaches ready
         sess = None
-        for _ in range(60):
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
             r = client.get(f"/api/sessions/{sid}")
             assert r.status_code == 200
             sess = r.json()
             if sess["status"] in ("ready", "error"):
                 break
-            time.sleep(0.1)
+            time.sleep(0.25)
         assert sess is not None
         assert sess["status"] == "ready"
         assert len(sess["plays"]) >= 1

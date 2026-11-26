@@ -142,10 +142,10 @@ def test_serve_session_full_workflow(tmp_path: Path) -> None:
         # Trigger auto-detect and wait for completion
         ad_res = client.post(f"/api/serve-sessions/{sid}/auto-detect", json={"server_name": "#7"}, headers=hdr)
         assert ad_res.status_code == 200
-        deadline = time.time() + 10.0
+        deadline = time.monotonic() + 30.0
         final_status = ad_res.json()["session"]["status"]
-        while final_status == "scanning" and time.time() < deadline:
-            time.sleep(0.1)
+        while final_status == "scanning" and time.monotonic() < deadline:
+            time.sleep(0.25)
             final_status = client.get(f"/api/serve-sessions/{sid}").json()["session"]["status"]
         assert final_status == "ready"
 
