@@ -82,6 +82,25 @@ def test_interpolate_court_from_net_handles_clipped_sidelines_and_click_order() 
         interpolate_court_from_net(Point2D(x=500.0, y=250.0), Point2D(x=510.0, y=250.0), image_width=1056)
 
 
+def test_interpolate_court_from_net_off_center_sideline_point() -> None:
+    lt = Point2D(x=215.0, y=252.0)
+    rt = Point2D(x=978.0, y=260.0)
+    # Camera shifted left: left sideline drops almost vertically below front_left (~x=213, y=458)
+    side_pt = Point2D(x=205.0, y=530.0)
+    cal = interpolate_court_from_net(lt, rt, image_width=1056, net_height_m=2.43, sideline_point=side_pt)
+    H, _ = compute_court_homography(cal)
+    # The clicked sideline point must project onto the left sideline (x_m == 0.0)
+    sx, sy = project_image_to_court(H, side_pt.x, side_pt.y)
+    assert sx == pytest.approx(0.0, abs=0.05)
+    assert sy > 2.0
+    # Right sideline must flare much wider than left sideline
+    assert (cal.attack_right.x - cal.front_right.x) > 3.0 * abs(cal.attack_left.x - cal.front_left.x)
+
+    # Sideline point above the net floor must raise ValueError
+    with pytest.raises(ValueError):
+        interpolate_court_from_net(lt, rt, image_width=1056, sideline_point=Point2D(x=200.0, y=300.0))
+
+
 def test_classify_serve_zones_seams_and_result_invariants() -> None:
     passers = default_passer_formation(3)  # P1(1.8,6.2), P2(4.5,6.5), P3(7.2,6.2)
 

@@ -142,6 +142,7 @@ class CourtCalibration(BaseModel):
     method: Literal["net", "four_corner"] = "four_corner"
     net_left_top: Point2D | None = None
     net_right_top: Point2D | None = None
+    sideline_point: Point2D | None = None
     net_height_m: float = 2.43
 
 

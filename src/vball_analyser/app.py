@@ -81,6 +81,7 @@ class CourtCalibrationRequest(BaseModel):
 class NetCourtCalibrationRequest(BaseModel):
     left_top: Point2D
     right_top: Point2D
+    sideline_point: Point2D | None = None
     net_height_m: float = Field(default=2.43, ge=1.8, le=2.7)
     attack_line_y: float | None = None
 
@@ -809,6 +810,7 @@ def create_app(
                 image_width=img_w,
                 net_height_m=body.net_height_m,
                 attack_line_y=body.attack_line_y,
+                sideline_point=body.sideline_point,
             )
             sess = serve_store.save_calibration(serve_session_id, cal)
         except ValueError as exc:

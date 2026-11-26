@@ -95,6 +95,7 @@ def normalize_court_calibration(cal: CourtCalibration) -> CourtCalibration:
         method=cal.method,
         net_left_top=cal.net_left_top,
         net_right_top=cal.net_right_top,
+        sideline_point=cal.sideline_point,
         net_height_m=cal.net_height_m,
     )
 
@@ -106,8 +107,10 @@ def interpolate_court_from_net(
     net_height_m: float = 2.43,
     attack_line_y: float | None = None,
     cam_height_m: float = 1.55,
+    sideline_point: Point2D | None = None,
 ) -> CourtCalibration:
-    """Interpolate the full 9m x 9m receiving court homography from the 2 net antenna top-tape points.
+    """Interpolate the full 9m x 9m receiving court homography from the 2 net antenna top-tape points
+    plus an optional 3rd point on either visible sideline to solve off-center camera angles.
 
     Works even when the baseline and 3m sideline corners are cropped outside the camera frame.
     """
@@ -136,6 +139,16 @@ def interpolate_court_from_net(
     vp_x = floor_mid_x
     vp_y = floor_mid_y - (cam_height_m / net_height_m) * net_h_px
 
+    if sideline_point is not None:
+        if not (math.isfinite(sideline_point.x) and math.isfinite(sideline_point.y)):
+            raise ValueError("Sideline point must be finite.")
+        anchor = fl if sideline_point.x < floor_mid_x else fr
+        if sideline_point.y <= anchor.y + 8.0:
+            raise ValueError("Sideline reference point must be on the near court below the net.")
+        # Intersect ray (sideline_point -> anchor) with horizon y = vp_y to solve off-center vanishing point
+        t_vp = (vp_y - anchor.y) / (sideline_point.y - anchor.y)
+        vp_x = anchor.x + t_vp * (sideline_point.x - anchor.x)
+
     if attack_line_y is not None and math.isfinite(attack_line_y):
         denom = max(10.0, floor_mid_y - vp_y)
         scale_3m = max(1.08, min(2.5, (attack_line_y - vp_y) / denom))
@@ -161,6 +174,7 @@ def interpolate_court_from_net(
         method="net",
         net_left_top=lt,
         net_right_top=rt,
+        sideline_point=sideline_point,
         net_height_m=net_height_m,
     )
     compute_court_homography(cal)

@@ -33,8 +33,9 @@
   ];
 
   const NET_CAL_LABELS = [
-    "1/2: Click Left Antenna Top-Tape Corner",
-    "2/2: Click Right Antenna Top-Tape Corner",
+    "1/3: Click Left Antenna Top-Tape Corner",
+    "2/3: Click Right Antenna Top-Tape Corner",
+    "3/3: Click Any Point Along Left or Right Sideline (Sets Camera Angle)",
   ];
 
   const sState = {
@@ -853,12 +854,12 @@
       sState.calPoints.push(imgPt);
 
       if (sState.calMode === "net") {
-        if (sState.calPoints.length < 2) {
-          sEls.calHint.textContent = NET_CAL_LABELS[1];
+        if (sState.calPoints.length < 3) {
+          sEls.calHint.textContent = NET_CAL_LABELS[sState.calPoints.length];
           renderVideoOverlay();
           return;
         }
-        const [left_top, right_top] = sState.calPoints;
+        const [left_top, right_top, sideline_point] = sState.calPoints;
         setCalibrationMode(false);
         const netHeightEl = document.getElementById("netHeightSelect");
         const netHeightM = netHeightEl ? parseFloat(netHeightEl.value) || 2.43 : 2.43;
@@ -866,7 +867,7 @@
           showBanner("", false);
           const payload = await postServe(
             `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/calibration/from-net`,
-            { left_top, right_top, net_height_m: netHeightM }
+            { left_top, right_top, sideline_point, net_height_m: netHeightM }
           );
           applyServePayload(payload);
         } catch (err) {

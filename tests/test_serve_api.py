@@ -184,6 +184,7 @@ def test_calibrate_court_from_net_endpoint(tmp_path: Path) -> None:
             json={
                 "left_top": {"x": 215.0, "y": 252.0},
                 "right_top": {"x": 978.0, "y": 260.0},
+                "sideline_point": {"x": 205.0, "y": 530.0},
                 "net_height_m": 2.43,
             },
             headers=hdr,
@@ -193,6 +194,7 @@ def test_calibrate_court_from_net_endpoint(tmp_path: Path) -> None:
         assert cal["is_calibrated"] is True
         assert cal["method"] == "net"
         assert cal["net_left_top"]["x"] == 215.0
+        assert cal["sideline_point"]["x"] == 205.0
 
 
 def test_index_contains_tabs_and_serves_serve_tab_js(tmp_path: Path) -> None:
