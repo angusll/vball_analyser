@@ -343,14 +343,26 @@ def fit_setting_path(
                 break
 
     if deflected:
-        # Trim trailing frames where spike deflection already began accelerating away from the arc
+        # Trim at most 2 trailing frames if they sharply diverge from the arc
+        # (e.g. first post-contact spike frame barely inside _INLIER_DIST_PX),
+        # without chewing back into normal VFR jitter or a frame matching a hitter contact.
+        trimmed_count = 0
         while (
-            len(final_inliers) > 4
+            trimmed_count < 2
+            and len(final_inliers) > 4
             and final_inliers[-1].timestamp_s >= t_apex_ref
-            and (final_errs[-1] > 5.5 or (final_errs[-1] > 3.5 and final_errs[-1] > final_errs[-2] * 1.4))
+            and final_errs[-1] > 12.0
+            and final_errs[-1] > final_errs[-2] * 1.8
         ):
+            last_det = final_inliers[-1]
+            if candidate_contact_frames and any(
+                abs(cf - last_det.frame_idx) <= 1 and math.hypot(cp.x - last_det.x, cp.y - last_det.y) < 55.0
+                for cf, cp in candidate_contact_frames
+            ):
+                break
             final_inliers.pop()
             final_errs.pop()
+            trimmed_count += 1
 
     if len(final_inliers) < 4:
         final_inliers = best_inliers

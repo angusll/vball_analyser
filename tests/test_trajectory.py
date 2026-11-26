@@ -204,4 +204,38 @@ def test_fit_setting_path_does_not_abort_early_on_vfr_duplicate_frames_before_co
     assert traj.contact_frame == 182
 
 
+def test_fit_setting_path_does_not_over_trim_jittered_contact_frame_on_deflection() -> None:
+    fps = 30.0
+    cal = NetCalibration(
+        left_point=Point2D(x=246.0, y=198.0),
+        right_point=Point2D(x=906.0, y=202.0),
+        is_manual=True,
+    )
+    dets: list[BallDetection] = []
+    # Smooth high set arc f=147..176
+    for f in range(147, 177):
+        tau = (f - 147) / fps
+        bx = 590.0 - 327.0 * tau
+        by = 174.0 - 516.0 * tau + 435.0 * tau * tau
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=bx, y=by, conf=0.5))
+
+    # Realistic 9-12px VFR jitter on descending branch f=179 and contact f=182
+    for f, dx, dy in [(179, 8.0, -5.0), (182, 11.0, 4.0)]:
+        tau = (f - 147) / fps
+        bx = 590.0 - 327.0 * tau + dx
+        by = 174.0 - 516.0 * tau + 435.0 * tau * tau + dy
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=bx, y=by, conf=0.5))
+
+    # Sharp post-contact spike deflection at f=183..185
+    for k in range(1, 4):
+        dets.append(BallDetection(frame_idx=182 + k, timestamp_s=(182 + k) / fps, x=300.0 + 30.0 * k, y=174.0, conf=0.5))
+
+    con_det = [d for d in dets if d.frame_idx == 182][0]
+    cand_contacts = [(182, Point2D(x=con_det.x + 2.0, y=con_det.y + 8.0))]
+    traj = fit_setting_path(dets, cal, fps=fps, frame_height=576, candidate_contact_frames=cand_contacts)
+    assert traj is not None
+    assert traj.contact_frame == 182
+
+
+
 
