@@ -32,6 +32,11 @@
     "4/4: Click Left Sideline at 3m Attack Line",
   ];
 
+  const NET_CAL_LABELS = [
+    "1/2: Click Left Antenna Top-Tape Corner",
+    "2/2: Click Right Antenna Top-Tape Corner",
+  ];
+
   const sState = {
     initialized: false,
     sessions: [],
@@ -45,6 +50,7 @@
     showHeatmap: false,
     showSeams: true,
     calibrating: false,
+    calMode: "net", // "net" (2 clicks) | "four_corner" (4 clicks)
     calPoints: [],
     calHover: null,
     dragTarget: null, // { type: "passer" | "serve", index, serveId }
@@ -56,6 +62,7 @@
     newSessionBtn: document.getElementById("newServeSessionBtn"),
     videoSelect: document.getElementById("serveVideoSelect"),
     loadVideoBtn: document.getElementById("serveLoadVideoBtn"),
+    calibrateNetBtn: document.getElementById("calibrateNetCourtBtn"),
     calibrateBtn: document.getElementById("calibrateCourtBtn"),
     autoDetectBtn: document.getElementById("autoDetectServesBtn"),
     statusBadge: document.getElementById("serveStatusBadge"),
@@ -188,7 +195,7 @@
 
   function projectCourtPt(H, x, y) {
     const denom = H[6] * x + H[7] * y + H[8];
-    if (Math.abs(denom) < 1e-6) return null;
+    if (denom <= 1e-4) return null;
     return {
       x: (H[0] * x + H[1] * y + H[2]) / denom,
       y: (H[3] * x + H[4] * y + H[5]) / denom,
@@ -225,9 +232,21 @@
     const rect = getServeVideoRect();
     const toC = (pt) => ({ x: rect.ox + pt.x * rect.scale, y: rect.oy + pt.y * rect.scale });
 
-    // Draw saved calibration grid
+    // Draw saved calibration grid + net reference line
     const cal = sState.session && sState.session.court_calibration;
     if (cal && cal.is_calibrated && !sState.calibrating) {
+      if (cal.net_left_top && cal.net_right_top) {
+        const n1 = toC(cal.net_left_top);
+        const n2 = toC(cal.net_right_top);
+        ctx.save();
+        ctx.strokeStyle = "rgba(74, 222, 128, 0.9)";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(n1.x, n1.y);
+        ctx.lineTo(n2.x, n2.y);
+        ctx.stroke();
+        ctx.restore();
+      }
       const H = solveCourtToImageHomography(cal);
       if (H) {
         ctx.save();
@@ -662,9 +681,11 @@
     // Linked video preview
     const hasVideo = Boolean(sess.video_session_id);
     sEls.videoCard.classList.toggle("hidden", !hasVideo);
+    if (sEls.calibrateNetBtn) sEls.calibrateNetBtn.disabled = !hasVideo;
     sEls.calibrateBtn.disabled = !hasVideo;
     const isCal = Boolean(sess.court_calibration && sess.court_calibration.is_calibrated);
-    sEls.calBadge.textContent = isCal ? "Calibrated (4-Corner)" : "Uncalibrated";
+    const calMethod = sess.court_calibration && sess.court_calibration.method === "net" ? "Net Interpolated" : "4-Corner";
+    sEls.calBadge.textContent = isCal ? `Calibrated (${calMethod})` : "Uncalibrated";
     sEls.autoDetectBtn.disabled = !hasVideo || !isCal || sess.status === "scanning";
 
     if (hasVideo) {
@@ -754,13 +775,15 @@
     applyServePayload(payload);
   }
 
-  function setCalibrationMode(active) {
+  function setCalibrationMode(active, mode) {
     sState.calibrating = active;
+    if (mode) sState.calMode = mode;
     sState.calPoints = [];
     sState.calHover = null;
     sEls.calHint.classList.toggle("hidden", !active);
     sEls.cancelCalBtn.classList.toggle("hidden", !active);
-    sEls.calHint.textContent = active ? CAL_LABELS[0] : "";
+    const labels = sState.calMode === "net" ? NET_CAL_LABELS : CAL_LABELS;
+    sEls.calHint.textContent = active ? labels[0] : "";
     renderVideoOverlay();
   }
 
@@ -800,9 +823,16 @@
       sharedApi().openLoadModalForServeTab();
     });
 
+    if (sEls.calibrateNetBtn) {
+      sEls.calibrateNetBtn.addEventListener("click", () => {
+        if (!sState.session || !sState.session.video_session_id) return;
+        setCalibrationMode(true, "net");
+      });
+    }
+
     sEls.calibrateBtn.addEventListener("click", () => {
       if (!sState.session || !sState.session.video_session_id) return;
-      setCalibrationMode(true);
+      setCalibrationMode(true, "four_corner");
     });
 
     sEls.cancelCalBtn.addEventListener("click", () => setCalibrationMode(false));
@@ -821,6 +851,30 @@
       const r = getServeVideoRect();
       const imgPt = { x: (pt.x - r.ox) / r.scale, y: (pt.y - r.oy) / r.scale };
       sState.calPoints.push(imgPt);
+
+      if (sState.calMode === "net") {
+        if (sState.calPoints.length < 2) {
+          sEls.calHint.textContent = NET_CAL_LABELS[1];
+          renderVideoOverlay();
+          return;
+        }
+        const [left_top, right_top] = sState.calPoints;
+        setCalibrationMode(false);
+        const netHeightEl = document.getElementById("netHeightSelect");
+        const netHeightM = netHeightEl ? parseFloat(netHeightEl.value) || 2.43 : 2.43;
+        try {
+          showBanner("", false);
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/calibration/from-net`,
+            { left_top, right_top, net_height_m: netHeightM }
+          );
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Invalid net calibration.", true);
+        }
+        return;
+      }
+
       if (sState.calPoints.length < 4) {
         sEls.calHint.textContent = CAL_LABELS[sState.calPoints.length];
         renderVideoOverlay();

@@ -281,7 +281,8 @@
           <button id="serveLoadVideoBtn" class="btn btn-secondary btn-small" type="button">Load Video</button>
         </div>
         <div class="serve-toolbar-group">
-          <button id="calibrateCourtBtn" class="btn btn-secondary btn-small" type="button">Calibrate Court (4 Clicks)</button>
+          <button id="calibrateNetCourtBtn" class="btn btn-secondary btn-small" type="button" title="Click left &amp; right net antenna top-tape corners to interpolate the full court">Calibrate via Net (2 Clicks)</button>
+          <button id="calibrateCourtBtn" class="btn btn-ghost btn-small" type="button" title="Advanced: click 4 corners of the front 3m floor rectangle">4-Corner Floor</button>
           <button id="autoDetectServesBtn" class="btn btn-primary btn-small" type="button">Auto-Detect Serves</button>
           <div id="serveStatusBadge" class="status-pill status-idle" aria-live="polite">
             <span class="status-dot" aria-hidden="true"></span>
@@ -297,7 +298,7 @@
         <div id="serveVideoCard" class="serve-panel serve-video-panel hidden">
           <div class="serve-panel-header">
             <div class="serve-panel-title">
-              <h2>Video Reference &amp; 4-Corner Calibration</h2>
+              <h2>Video Reference &amp; Net Calibration</h2>
               <span id="serveCalBadge" class="cal-scale-badge">Uncalibrated</span>
             </div>
             <div class="serve-panel-actions">

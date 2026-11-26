@@ -38,7 +38,7 @@ from vball_analyser.security import (
     validate_local_video_path,
 )
 from vball_analyser.serve_detector import detect_serve_events
-from vball_analyser.serve_geometry import compute_distribution_summary
+from vball_analyser.serve_geometry import compute_distribution_summary, interpolate_court_from_net
 from vball_analyser.serve_storage import ServeSessionStore
 from vball_analyser.storage import SessionStore, validate_safe_id
 from vball_analyser.video_io import (
@@ -76,6 +76,13 @@ class CourtCalibrationRequest(BaseModel):
     front_right: Point2D
     attack_right: Point2D
     attack_left: Point2D
+
+
+class NetCourtCalibrationRequest(BaseModel):
+    left_top: Point2D
+    right_top: Point2D
+    net_height_m: float = Field(default=2.43, ge=1.8, le=2.7)
+    attack_line_y: float | None = None
 
 
 class AutoDetectServesRequest(BaseModel):
@@ -772,6 +779,36 @@ def create_app(
                 attack_right=body.attack_right,
                 attack_left=body.attack_left,
                 is_calibrated=True,
+            )
+            sess = serve_store.save_calibration(serve_session_id, cal)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/calibration/from-net")
+    async def save_serve_calibration_from_net(
+        serve_session_id: str,
+        request: Request,
+        body: NetCourtCalibrationRequest,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            current = serve_store.load_session(serve_session_id)
+            img_w = 1280
+            if current.video_session_id:
+                try:
+                    img_w = store.load_session(current.video_session_id).metadata.width
+                except FileNotFoundError:
+                    pass
+            cal = interpolate_court_from_net(
+                left_top=body.left_top,
+                right_top=body.right_top,
+                image_width=img_w,
+                net_height_m=body.net_height_m,
+                attack_line_y=body.attack_line_y,
             )
             sess = serve_store.save_calibration(serve_session_id, cal)
         except ValueError as exc:

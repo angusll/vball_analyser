@@ -53,16 +53,23 @@ def extract_foot_point(frame: PoseFrame) -> tuple[float, float]:
 
 
 def _proxy_net_calibration(cal: CourtCalibration) -> NetCalibration:
-    """Estimate net top-tape line from front-3m centerline corners for FramePredictor compatibility."""
+    """Return net top-tape line from calibrated antenna points or estimated from centerline corners."""
+    if cal.net_left_top is not None and cal.net_right_top is not None:
+        return NetCalibration(
+            left_point=cal.net_left_top,
+            right_point=cal.net_right_top,
+            net_height_m=cal.net_height_m,
+            is_manual=True,
+        )
     span = math.hypot(
         cal.front_right.x - cal.front_left.x,
         cal.front_right.y - cal.front_left.y,
     )
-    lift_px = (DEFAULT_CONFIG.default_net_height_m / DEFAULT_CONFIG.net_width_m) * span
+    lift_px = (cal.net_height_m / DEFAULT_CONFIG.net_width_m) * span
     return NetCalibration(
         left_point=Point2D(x=cal.front_left.x, y=max(0.0, cal.front_left.y - lift_px)),
         right_point=Point2D(x=cal.front_right.x, y=max(0.0, cal.front_right.y - lift_px)),
-        net_height_m=DEFAULT_CONFIG.default_net_height_m,
+        net_height_m=cal.net_height_m,
         is_manual=False,
     )
 

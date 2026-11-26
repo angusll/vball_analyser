@@ -11,6 +11,7 @@ import numpy as np
 from vball_analyser.models import (
     CourtCalibration,
     PasserPosition,
+    Point2D,
     ServeDistributionSummary,
     ServeEvent,
 )
@@ -91,7 +92,79 @@ def normalize_court_calibration(cal: CourtCalibration) -> CourtCalibration:
         attack_right=bot_two[1],
         attack_left=bot_two[0],
         is_calibrated=cal.is_calibrated,
+        method=cal.method,
+        net_left_top=cal.net_left_top,
+        net_right_top=cal.net_right_top,
+        net_height_m=cal.net_height_m,
     )
+
+
+def interpolate_court_from_net(
+    left_top: Point2D,
+    right_top: Point2D,
+    image_width: int,
+    net_height_m: float = 2.43,
+    attack_line_y: float | None = None,
+    cam_height_m: float = 1.55,
+) -> CourtCalibration:
+    """Interpolate the full 9m x 9m receiving court homography from the 2 net antenna top-tape points.
+
+    Works even when the baseline and 3m sideline corners are cropped outside the camera frame.
+    """
+    if not all(math.isfinite(v) for v in (left_top.x, left_top.y, right_top.x, right_top.y, net_height_m)):
+        raise ValueError("Net calibration points must be finite numbers.")
+
+    lt, rt = (left_top, right_top) if left_top.x <= right_top.x else (right_top, left_top)
+    dx = rt.x - lt.x
+    dy = rt.y - lt.y
+    span = math.hypot(dx, dy)
+    if span < 40.0:
+        raise ValueError("Net antenna endpoints are too close together.")
+
+    # Unit downward perpendicular to the net top tape
+    nx = -dy / span
+    ny = dx / span
+    if ny < 0.0:
+        nx, ny = -nx, -ny
+
+    net_h_px = (net_height_m / COURT_WIDTH_M) * span
+    fl = Point2D(x=round(lt.x + nx * net_h_px, 2), y=round(lt.y + ny * net_h_px, 2))
+    fr = Point2D(x=round(rt.x + nx * net_h_px, 2), y=round(rt.y + ny * net_h_px, 2))
+
+    floor_mid_x = 0.5 * (fl.x + fr.x)
+    floor_mid_y = 0.5 * (fl.y + fr.y)
+    vp_x = floor_mid_x
+    vp_y = floor_mid_y - (cam_height_m / net_height_m) * net_h_px
+
+    if attack_line_y is not None and math.isfinite(attack_line_y):
+        denom = max(10.0, floor_mid_y - vp_y)
+        scale_3m = max(1.08, min(2.5, (attack_line_y - vp_y) / denom))
+    else:
+        f_px = 0.95 * max(320.0, float(image_width))
+        d_cam = max(5.0, (f_px * COURT_WIDTH_M) / span)
+        scale_3m = d_cam / max(1.5, d_cam - ATTACK_LINE_M)
+
+    al = Point2D(
+        x=round(vp_x + (fl.x - vp_x) * scale_3m, 2),
+        y=round(vp_y + (fl.y - vp_y) * scale_3m, 2),
+    )
+    ar = Point2D(
+        x=round(vp_x + (fr.x - vp_x) * scale_3m, 2),
+        y=round(vp_y + (fr.y - vp_y) * scale_3m, 2),
+    )
+    cal = CourtCalibration(
+        front_left=fl,
+        front_right=fr,
+        attack_right=ar,
+        attack_left=al,
+        is_calibrated=True,
+        method="net",
+        net_left_top=lt,
+        net_right_top=rt,
+        net_height_m=net_height_m,
+    )
+    compute_court_homography(cal)
+    return cal
 
 
 def compute_court_homography(cal: CourtCalibration) -> tuple[np.ndarray, np.ndarray]:

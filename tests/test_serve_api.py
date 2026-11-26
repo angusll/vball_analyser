@@ -169,6 +169,32 @@ def test_post_mutations_respect_server_filter_query(tmp_path: Path) -> None:
         assert res.json()["summary"]["ace_pct"] == 100.0
 
 
+def test_calibrate_court_from_net_endpoint(tmp_path: Path) -> None:
+    client, cfg = _make_client(tmp_path)
+    vid = cfg.allowed_local_dirs[0] / "net_cal.mp4"
+    make_synthetic_baseline_video(vid, duration_s=1.5, fps=15)
+    with client:
+        csrf = client.get("/api/csrf").json()["csrf_token"]
+        hdr = {"X-CSRF-Token": csrf}
+        vid_id = client.post("/api/sessions/local", json={"path": str(vid), "skip_analysis": True}, headers=hdr).json()["session_id"]
+        sid = client.post("/api/serve-sessions", json={"name": "Net Cal", "video_session_id": vid_id}, headers=hdr).json()["session"]["serve_session_id"]
+
+        res = client.post(
+            f"/api/serve-sessions/{sid}/calibration/from-net",
+            json={
+                "left_top": {"x": 215.0, "y": 252.0},
+                "right_top": {"x": 978.0, "y": 260.0},
+                "net_height_m": 2.43,
+            },
+            headers=hdr,
+        )
+        assert res.status_code == 200
+        cal = res.json()["session"]["court_calibration"]
+        assert cal["is_calibrated"] is True
+        assert cal["method"] == "net"
+        assert cal["net_left_top"]["x"] == 215.0
+
+
 def test_index_contains_tabs_and_serves_serve_tab_js(tmp_path: Path) -> None:
     client, _ = _make_client(tmp_path)
     with client:

@@ -10,6 +10,7 @@ from vball_analyser.serve_geometry import (
     compute_court_homography,
     compute_distribution_summary,
     default_passer_formation,
+    interpolate_court_from_net,
     project_court_to_image,
     project_image_to_court,
 )
@@ -60,6 +61,25 @@ def test_homography_roundtrip_and_degenerate_quad() -> None:
     H_rot, _ = compute_court_homography(rotated)
     assert project_image_to_court(H_rot, 200.0, 320.0) == pytest.approx((0.0, 0.0), abs=1e-2)
     assert project_image_to_court(H_rot, 940.0, 420.0) == pytest.approx((9.0, 3.0), abs=1e-2)
+
+
+def test_interpolate_court_from_net_handles_clipped_sidelines_and_click_order() -> None:
+    lt = Point2D(x=215.0, y=252.0)
+    rt = Point2D(x=978.0, y=260.0)
+    # Clicking right-to-left must produce the same normalized calibration as left-to-right
+    cal_lr = interpolate_court_from_net(lt, rt, image_width=1056, net_height_m=2.43)
+    cal_rl = interpolate_court_from_net(rt, lt, image_width=1056, net_height_m=2.43)
+    assert cal_lr.method == "net"
+    assert cal_lr.front_left.x == pytest.approx(cal_rl.front_left.x, abs=1e-2)
+    assert cal_lr.attack_right.x > 1056.0  # Clipped right 3m corner outside frame still valid!
+    H, H_inv = compute_court_homography(cal_lr)
+    px, py = project_court_to_image(H_inv, 4.5, 6.0)
+    rx, ry = project_image_to_court(H, px, py)
+    assert (rx, ry) == pytest.approx((4.5, 6.0), abs=1e-2)
+
+    # Too-short net span rejected
+    with pytest.raises(ValueError):
+        interpolate_court_from_net(Point2D(x=500.0, y=250.0), Point2D(x=510.0, y=250.0), image_width=1056)
 
 
 def test_classify_serve_zones_seams_and_result_invariants() -> None:

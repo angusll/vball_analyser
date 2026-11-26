@@ -132,13 +132,17 @@ class AnalysisSession(BaseModel):
 
 
 class CourtCalibration(BaseModel):
-    """4-corner calibration of the visible front 3m zone (9m wide x 3m deep)."""
+    """Court floor homography from either 2-click net interpolation or 4-corner front-3m clicks."""
 
     front_left: Point2D
     front_right: Point2D
     attack_right: Point2D
     attack_left: Point2D
     is_calibrated: bool = True
+    method: Literal["net", "four_corner"] = "four_corner"
+    net_left_top: Point2D | None = None
+    net_right_top: Point2D | None = None
+    net_height_m: float = 2.43
 
 
 class PasserPosition(BaseModel):
