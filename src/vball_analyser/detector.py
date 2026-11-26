@@ -8,7 +8,7 @@ import math
 import os
 import uuid
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import cv2
 import numpy as np
@@ -141,16 +141,39 @@ class YoloGpuPredictor:
             coreml_path = base.with_suffix(".mlpackage")
             if coreml_path.is_dir():
                 return str(coreml_path)
-        elif self.device in {"cpu", "xpu", "xpu:0"} and importlib.util.find_spec("openvino") is not None:
+        elif (self.device == "cpu" or self.device.startswith("xpu")) and importlib.util.find_spec("openvino") is not None:
             ov_dir = base.with_name(f"{base.stem}_openvino_model")
             if ov_dir.is_dir():
                 return str(ov_dir)
         return str(base)
 
+    def _base_weights_path(self, weights: str) -> str:
+        raw = Path(weights)
+        if raw.parent == Path(".") and not raw.is_absolute():
+            self._models_dir.mkdir(parents=True, exist_ok=True)
+            return str(self._models_dir / raw.name)
+        return str(raw)
+
     def _infer_kwargs(self, resolved_weights: str) -> dict[str, object]:
         if self._is_cuda and resolved_weights.endswith(".pt"):
             return {"quantize": "fp16"}
         return {}
+
+    def _load_yolo_model(self, yolo_cls: Any, weights: str, task: str) -> tuple[object, str]:
+        resolved = self._resolve_weights(weights)
+        fallback = self._base_weights_path(weights)
+        try:
+            return yolo_cls(resolved, task=task), resolved
+        except Exception as exc:
+            if resolved != fallback:
+                logger.warning(
+                    "Failed to load compiled model %s (%s); falling back to %s",
+                    resolved,
+                    exc,
+                    fallback,
+                )
+                return yolo_cls(fallback, task=task), fallback
+            raise
 
     def _ensure_models(self) -> tuple[object, object]:
         if self._det_model is None or self._pose_model is None:
@@ -160,17 +183,15 @@ class YoloGpuPredictor:
             if self._is_cuda:
                 torch.backends.cudnn.benchmark = True
 
-            self._det_resolved = self._resolve_weights(self._det_weights)
-            self._pose_resolved = self._resolve_weights(self._pose_weights)
+            self._det_model, self._det_resolved = self._load_yolo_model(YOLO, self._det_weights, "detect")
+            self._pose_model, self._pose_resolved = self._load_yolo_model(YOLO, self._pose_weights, "pose")
             logger.info(
-                "Loading YOLO11 models on device=%s (det=%s, pose=%s, batch=%d)",
+                "Loaded YOLO11 models on device=%s (det=%s, pose=%s, batch=%d)",
                 self.device,
                 self._det_resolved,
                 self._pose_resolved,
                 self._batch_size,
             )
-            self._det_model = YOLO(self._det_resolved, task="detect")
-            self._pose_model = YOLO(self._pose_resolved, task="pose")
         return self._det_model, self._pose_model
 
     def detect_balls(

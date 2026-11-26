@@ -328,3 +328,45 @@ def test_stops_detection_after_first_serve_and_receive_during_ongoing_rally(tmp_
     events = detect_serve_events(video_path, cal, FakeServePredictor(balls, tracks), meta)
     assert len(events) == 1
     assert events[0].timestamp_s is not None and abs(events[0].timestamp_s - 1.6) < 0.25
+
+
+def test_multi_serve_short_clip_detects_both_serves(tmp_path: Path) -> None:
+    video_path = tmp_path / "multi_serve_drill.mp4"
+    fps = 15.0
+    duration_s = 14.0
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+    p1_px = project_court_to_image(H_inv, 2.0, 6.2)
+    p3_px = project_court_to_image(H_inv, 7.2, 6.2)
+
+    n_frames = int(fps * duration_s)
+    p1_frames = [_make_pose_frame(i, round(i / fps, 4), p1_px[0], p1_px[1]) for i in range(n_frames)]
+    p3_frames = [_make_pose_frame(i, round(i / fps, 4), p3_px[0], p3_px[1]) for i in range(n_frames)]
+    balls: list[BallDetection] = []
+
+    # Serve #1 received by P1 at t=1.6s (frame 24)
+    for i in range(10, 25):
+        u = (i - 10) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p1_px[0], y=150.0 + u * (310.0 - 150.0), conf=0.9))
+    for i in range(25, 32):
+        u = (i - 24) / 7.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p1_px[0], y=310.0 - u * 120.0, conf=0.9))
+
+    # Serve #2 in the same <=20s drill clip received by P3 at t=9.6s (frame 144, >6s after serve #1)
+    for i in range(130, 145):
+        u = (i - 130) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p3_px[0], y=150.0 + u * (310.0 - 150.0), conf=0.9))
+    for i in range(145, 152):
+        u = (i - 144) / 7.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p3_px[0], y=310.0 - u * 120.0, conf=0.9))
+
+    tracks = [
+        PlayerTrack(track_id=1, court_side="attacking", frames=p1_frames),
+        PlayerTrack(track_id=3, court_side="attacking", frames=p3_frames),
+    ]
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=n_frames, duration_s=duration_s, codec="h264")
+    events = detect_serve_events(video_path, cal, FakeServePredictor(balls, tracks), meta)
+    assert len(events) == 2
+    assert events[0].timestamp_s is not None and abs(events[0].timestamp_s - 1.6) < 0.25
+    assert events[1].timestamp_s is not None and abs(events[1].timestamp_s - 9.6) < 0.25

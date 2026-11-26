@@ -52,16 +52,19 @@
     showSeams: true,
     showCalOverlay: true,
     calibrating: false,
-    calMode: "net", // "net" (2 clicks) | "four_corner" (4 clicks)
+    calMode: "net", // "net" (3 clicks) | "four_corner" (4 clicks)
     calPoints: [],
     calHover: null,
     dragTarget: null, // { type: "passer" | "serve", index, serveId }
     pollTimer: null,
+    pendingConfirm: null, // "clear" | "deleteSession" | null
+    confirmTimer: null,
   };
 
   const sEls = {
     sessionSelect: document.getElementById("serveSessionSelect"),
     newSessionBtn: document.getElementById("newServeSessionBtn"),
+    deleteSessionBtn: document.getElementById("deleteServeSessionBtn"),
     videoSelect: document.getElementById("serveVideoSelect"),
     loadVideoBtn: document.getElementById("serveLoadVideoBtn"),
     calibrateNetBtn: document.getElementById("calibrateNetCourtBtn"),
@@ -86,6 +89,7 @@
     selectedResult: document.getElementById("selectedServeResult"),
     deselectBtn: document.getElementById("deselectServeBtn"),
     undoBtn: document.getElementById("undoServeBtn"),
+    clearBtn: document.getElementById("clearServesBtn"),
     resetPassersBtn: document.getElementById("resetPassersBtn"),
     toggleDotsBtn: document.getElementById("toggleDotsBtn"),
     toggleHeatmapBtn: document.getElementById("toggleHeatmapBtn"),
@@ -703,8 +707,23 @@
       }
       sEls.videoSelect.value = sess.video_session_id;
     } else {
+      sEls.video.pause();
+      if (sEls.video.hasAttribute("src")) {
+        sEls.video.removeAttribute("src");
+        sEls.video.load();
+      }
+      sEls.playPauseBtn.textContent = "Play";
+      sEls.videoTime.textContent = "0.00s";
+      sEls.seekSlider.value = "0";
       sEls.videoSelect.value = "";
     }
+
+    // Sync active formation preset button to session's default passer count
+    const passerCount = Array.isArray(sess.default_passers) ? sess.default_passers.length : 0;
+    document.querySelectorAll(".serve-formation-btn").forEach((b) => {
+      const count = parseInt(b.getAttribute("data-formation") || "0", 10);
+      b.classList.toggle("active", count === passerCount);
+    });
 
     if (sess.status === "scanning") {
       if (!sState.pollTimer) {
@@ -773,14 +792,36 @@
     await loadServeSession(sState.session.serve_session_id);
   }
 
+  function clearPendingConfirm() {
+    if (sState.confirmTimer) {
+      window.clearTimeout(sState.confirmTimer);
+      sState.confirmTimer = null;
+    }
+    sState.pendingConfirm = null;
+    if (sEls.clearBtn) sEls.clearBtn.textContent = "Clear";
+    if (sEls.deleteSessionBtn) sEls.deleteSessionBtn.textContent = "Delete";
+  }
+
+  function armConfirm(kind, btn, armedLabel) {
+    clearPendingConfirm();
+    sState.pendingConfirm = kind;
+    btn.textContent = armedLabel;
+    sState.confirmTimer = window.setTimeout(clearPendingConfirm, 4000);
+  }
+
   async function deleteServeById(serveId) {
     if (!sState.session) return;
-    const payload = await postServe(
-      `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(serveId)}/delete`,
-      {}
-    );
-    if (sState.selectedServeId === serveId) sState.selectedServeId = null;
-    applyServePayload(payload);
+    try {
+      showBanner("", false);
+      const payload = await postServe(
+        `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(serveId)}/delete`,
+        {}
+      );
+      if (sState.selectedServeId === serveId) sState.selectedServeId = null;
+      applyServePayload(payload);
+    } catch (err) {
+      showBanner(err.message || "Unable to delete serve.", true);
+    }
   }
 
   function setCalibrationMode(active, mode) {
@@ -808,23 +849,58 @@
     });
 
     sEls.newSessionBtn.addEventListener("click", async () => {
-      const label = `Practice ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-      const payload = await sharedApi().apiPostJson("/api/serve-sessions", { name: label });
-      sState.selectedServeId = null;
-      sState.activeServer = "All";
-      applyServePayload(payload);
-      await refreshServeSessionsDropdown(payload.session.serve_session_id);
+      try {
+        showBanner("", false);
+        const label = `Practice ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+        const payload = await sharedApi().apiPostJson("/api/serve-sessions", { name: label });
+        sState.selectedServeId = null;
+        sState.activeServer = "All";
+        applyServePayload(payload);
+        await refreshServeSessionsDropdown(payload.session.serve_session_id);
+      } catch (err) {
+        showBanner(err.message || "Unable to create serve session.", true);
+      }
     });
+
+    if (sEls.deleteSessionBtn) {
+      sEls.deleteSessionBtn.addEventListener("click", async () => {
+        if (!sState.session) return;
+        if (sState.pendingConfirm !== "deleteSession") {
+          armConfirm("deleteSession", sEls.deleteSessionBtn, "Confirm Delete?");
+          return;
+        }
+        clearPendingConfirm();
+        try {
+          showBanner("", false);
+          await sharedApi().apiPostJson(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/delete`,
+            {}
+          );
+          sState.session = null;
+          sState.selectedServeId = null;
+          sState.activeServer = "All";
+          await refreshServeSessionsDropdown();
+        } catch (err) {
+          showBanner(err.message || "Unable to delete serve session.", true);
+        }
+      });
+    }
 
     sEls.videoSelect.addEventListener("change", async () => {
       if (!sState.session) return;
       const vid = sEls.videoSelect.value;
       const body = vid ? { video_session_id: vid } : { clear_video_session: true };
-      const payload = await postServe(
-        `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
-        body
-      );
-      applyServePayload(payload);
+      try {
+        showBanner("", false);
+        const payload = await postServe(
+          `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+          body
+        );
+        applyServePayload(payload);
+      } catch (err) {
+        showBanner(err.message || "Unable to update linked video.", true);
+        await refreshCurrentSession();
+      }
     });
 
     sEls.loadVideoBtn.addEventListener("click", () => {
@@ -964,36 +1040,50 @@
       btn.addEventListener("click", async () => {
         if (!sState.session) return;
         const count = parseInt(btn.getAttribute("data-formation") || "3", 10);
-        document.querySelectorAll(".serve-formation-btn").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
         const passers = FORMATIONS[count] || FORMATIONS[3];
         sState.selectedServeId = null;
-        const payload = await postServe(
-          `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
-          { default_passers: passers }
-        );
-        applyServePayload(payload);
+        try {
+          showBanner("", false);
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+            { default_passers: passers }
+          );
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Unable to update passer formation.", true);
+        }
       });
     });
 
     sEls.resetPassersBtn.addEventListener("click", async () => {
       if (!sState.session) return;
       sState.selectedServeId = null;
-      const payload = await postServe(
-        `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
-        { default_passers: FORMATIONS[3] }
-      );
-      applyServePayload(payload);
+      try {
+        showBanner("", false);
+        const payload = await postServe(
+          `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+          { default_passers: FORMATIONS[3] }
+        );
+        applyServePayload(payload);
+      } catch (err) {
+        showBanner(err.message || "Unable to reset passers.", true);
+      }
     });
 
     sEls.selectedResult.addEventListener("change", async () => {
       const sel = getSelectedServe();
       if (!sState.session || !sel) return;
-      const payload = await postServe(
-        `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
-        { result: sEls.selectedResult.value }
-      );
-      applyServePayload(payload);
+      try {
+        showBanner("", false);
+        const payload = await postServe(
+          `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
+          { result: sEls.selectedResult.value }
+        );
+        applyServePayload(payload);
+      } catch (err) {
+        showBanner(err.message || "Unable to update serve result.", true);
+        await refreshCurrentSession();
+      }
     });
 
     sEls.deselectBtn.addEventListener("click", () => selectServe(null));
@@ -1003,6 +1093,28 @@
       const last = sState.session.serves[sState.session.serves.length - 1];
       await deleteServeById(last.serve_id);
     });
+
+    if (sEls.clearBtn) {
+      sEls.clearBtn.addEventListener("click", async () => {
+        if (!sState.session || !sState.session.serves.length) return;
+        if (sState.pendingConfirm !== "clear") {
+          armConfirm("clear", sEls.clearBtn, "Confirm Clear?");
+          return;
+        }
+        clearPendingConfirm();
+        try {
+          showBanner("", false);
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/clear`,
+            {}
+          );
+          sState.selectedServeId = null;
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Unable to clear serves.", true);
+        }
+      });
+    }
 
     sEls.toggleDotsBtn.addEventListener("click", () => {
       sState.showDots = !sState.showDots;
@@ -1044,11 +1156,16 @@
       const nextServers = [...(sState.session.servers || []), name];
       sEls.newServerInput.value = "";
       sState.activeServer = name;
-      const payload = await postServe(
-        `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
-        { servers: nextServers }
-      );
-      applyServePayload(payload);
+      try {
+        showBanner("", false);
+        const payload = await postServe(
+          `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+          { servers: nextServers }
+        );
+        applyServePayload(payload);
+      } catch (err) {
+        showBanner(err.message || "Unable to add server.", true);
+      }
     });
 
     // Interactive court pointer handlers (passer drag, serve select/drag, click-to-log)
@@ -1114,6 +1231,15 @@
       }
     });
 
+    sEls.courtCanvas.addEventListener("pointercancel", async () => {
+      if (!sState.dragTarget) return;
+      const wasMoved = sState.dragTarget.moved;
+      sState.dragTarget = null;
+      if (wasMoved) {
+        await refreshCurrentSession();
+      }
+    });
+
     sEls.courtCanvas.addEventListener("pointerup", async (ev) => {
       if (!sState.session) return;
       const pos = canvasPointerPos(sEls.courtCanvas, ev);
@@ -1124,30 +1250,36 @@
         sState.dragTarget = null;
         if (!drag.moved) return;
 
-        if (drag.type === "passer") {
-          const sel = getSelectedServe();
-          if (sel) {
-            const payload = await postServe(
-              `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
-              { passers_snapshot: sel.passers_snapshot }
-            );
-            applyServePayload(payload);
-          } else {
-            const payload = await postServe(
-              `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
-              { default_passers: sState.session.default_passers }
-            );
-            applyServePayload(payload);
+        try {
+          showBanner("", false);
+          if (drag.type === "passer") {
+            const sel = getSelectedServe();
+            if (sel) {
+              const payload = await postServe(
+                `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
+                { passers_snapshot: sel.passers_snapshot }
+              );
+              applyServePayload(payload);
+            } else {
+              const payload = await postServe(
+                `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+                { default_passers: sState.session.default_passers }
+              );
+              applyServePayload(payload);
+            }
+          } else if (drag.type === "serve") {
+            const sv = sState.session.serves.find((s) => s.serve_id === drag.serveId);
+            if (sv) {
+              const payload = await postServe(
+                `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sv.serve_id)}/update`,
+                { x_m: sv.x_m, y_m: sv.y_m }
+              );
+              applyServePayload(payload);
+            }
           }
-        } else if (drag.type === "serve") {
-          const sv = sState.session.serves.find((s) => s.serve_id === drag.serveId);
-          if (sv) {
-            const payload = await postServe(
-              `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sv.serve_id)}/update`,
-              { x_m: sv.x_m, y_m: sv.y_m }
-            );
-            applyServePayload(payload);
-          }
+        } catch (err) {
+          showBanner(err.message || "Unable to save drag position.", true);
+          await refreshCurrentSession();
         }
         return;
       }
@@ -1158,17 +1290,22 @@
       const clampedY = Math.max(-0.5, Math.min(10.8, y_m));
       const serverName = sState.activeServer === "All" ? "Unassigned" : sState.activeServer;
       const ts = sState.session.video_session_id && sEls.video.src ? sEls.video.currentTime : null;
-      const payload = await postServe(
-        `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves`,
-        {
-          x_m: clampedX,
-          y_m: clampedY,
-          result: sState.resultMode,
-          server_name: serverName,
-          timestamp_s: ts,
-        }
-      );
-      applyServePayload(payload);
+      try {
+        showBanner("", false);
+        const payload = await postServe(
+          `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves`,
+          {
+            x_m: clampedX,
+            y_m: clampedY,
+            result: sState.resultMode,
+            server_name: serverName,
+            timestamp_s: ts,
+          }
+        );
+        applyServePayload(payload);
+      } catch (err) {
+        showBanner(err.message || "Unable to log serve.", true);
+      }
     });
 
     window.addEventListener("resize", () => {

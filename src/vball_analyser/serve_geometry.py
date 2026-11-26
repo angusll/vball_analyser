@@ -116,6 +116,8 @@ def interpolate_court_from_net(
     """
     if not all(math.isfinite(v) for v in (left_top.x, left_top.y, right_top.x, right_top.y, net_height_m)):
         raise ValueError("Net calibration points must be finite numbers.")
+    if net_height_m <= 0.0:
+        raise ValueError("Net height must be positive.")
 
     lt, rt = (left_top, right_top) if left_top.x <= right_top.x else (right_top, left_top)
     dx = rt.x - lt.x

@@ -140,6 +140,10 @@ class ServeSessionStore:
             ]
             session.default_passers = new_passers
             for s in session.serves:
+                # Preserve video-derived per-serve passer snapshots; only live-recompute
+                # pure manual serves that were charted against default_passers.
+                if s.source != "manual" or s.timestamp_s is not None:
+                    continue
                 s.passers_snapshot = [p.model_copy() for p in new_passers]
                 nx, ny, norm_res, zone, depth, is_seam, seam_pair = classify_serve(
                     s.x_m, s.y_m, s.result, s.passers_snapshot
@@ -269,6 +273,12 @@ class ServeSessionStore:
         for idx, s in enumerate(remaining, start=1):
             s.index = idx
         session.serves = remaining
+        self.save_session(session)
+        return session
+
+    def clear_serves(self, serve_session_id: str) -> ServeSession:
+        session = self.load_session(serve_session_id)
+        session.serves = []
         self.save_session(session)
         return session
 

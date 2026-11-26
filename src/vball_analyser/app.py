@@ -154,7 +154,9 @@ def create_app(
     )
     store = SessionStore(config.sessions_dir)
     serve_store = ServeSessionStore(config.serve_sessions_dir)
-    active_predictor: FramePredictor = predictor if predictor is not None else YoloGpuPredictor()
+    active_predictor: FramePredictor = (
+        predictor if predictor is not None else YoloGpuPredictor(models_dir=config.models_dir)
+    )
     active_tasks: set[asyncio.Task[None]] = set()
     gpu_lock = asyncio.Lock()
 
@@ -547,17 +549,18 @@ def create_app(
             start_s = max(0.0, center - 2.5)
             end_s = min(dur, center + 1.5)
 
-        play, raw_balls = await asyncio.to_thread(
-            analyse_play_window,
-            video_path,
-            len(session.plays) + 1,
-            start_s,
-            end_s,
-            session.calibration,
-            active_predictor,
-            session.metadata,
-            sdir,
-        )
+        async with gpu_lock:
+            play, raw_balls = await asyncio.to_thread(
+                analyse_play_window,
+                video_path,
+                len(session.plays) + 1,
+                start_s,
+                end_s,
+                session.calibration,
+                active_predictor,
+                session.metadata,
+                sdir,
+            )
         store.save_play_ball_cache(session_id, play.play_id, raw_balls)
         session.plays.append(play)
         session.plays.sort(key=lambda p: p.start_time_s)
@@ -829,11 +832,18 @@ def create_app(
         _require_csrf(request)
         try:
             sess = serve_store.load_session(serve_session_id)
+            if sess.status == "scanning":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Serve auto-detection is already running for this session.",
+                )
             if not sess.video_session_id:
                 raise ValueError("Link a video session before running serve auto-detection.")
             if sess.court_calibration is None or not sess.court_calibration.is_calibrated:
-                raise ValueError("Calibrate the 4 front-3m court corners before auto-detection.")
+                raise ValueError("Calibrate the court (via Net or 4-Corner Floor) before auto-detection.")
             store.resolve_web_video_path(sess.video_session_id)
+        except HTTPException:
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
@@ -896,6 +906,21 @@ def create_app(
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/serves/clear")
+    async def clear_serve_events(
+        serve_session_id: str,
+        request: Request,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            sess = serve_store.clear_serves(serve_session_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:

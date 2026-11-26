@@ -15,12 +15,27 @@ def test_serve_store_crud_and_snapshot_isolation(tmp_path: Path) -> None:
     sess = store.create_session("Tuesday Practice")
     assert len(sess.default_passers) == 3
 
-    # Add manual serve in seam between P1 and P2
+    # Add manual serve in seam between P1 and P2, plus a video-derived auto serve
     sess = store.add_serve(sess.serve_session_id, x_m=3.15, y_m=6.3, result="in", server_name="#7")
-    assert len(sess.serves) == 1
+    auto_passers = [
+        PasserPosition(label="P1", x_m=1.8, y_m=6.3),
+        PasserPosition(label="P2", x_m=4.5, y_m=6.3),
+    ]
+    sess = store.add_serve(
+        sess.serve_session_id,
+        x_m=3.15,
+        y_m=6.3,
+        result="in",
+        server_name="#7",
+        source="auto",
+        timestamp_s=2.4,
+        passers_snapshot=auto_passers,
+    )
+    assert len(sess.serves) == 2
     assert sess.serves[0].is_seam is True
+    assert sess.serves[1].is_seam is True
 
-    # Dragging default_passers directly onto the serve auto-recomputes seam status for the summary
+    # Dragging default_passers updates pure manual serves but preserves video-derived auto snapshots
     on_serve_formation = [
         PasserPosition(label="P1", x_m=3.15, y_m=6.3),
         PasserPosition(label="P2", x_m=6.5, y_m=6.3),
@@ -28,6 +43,8 @@ def test_serve_store_crud_and_snapshot_isolation(tmp_path: Path) -> None:
     sess = store.update_session(sess.serve_session_id, default_passers=on_serve_formation)
     assert len(sess.default_passers) == 2
     assert sess.serves[0].is_seam is False
+    assert sess.serves[1].is_seam is True
+    assert [p.x_m for p in sess.serves[1].passers_snapshot] == [1.8, 4.5]
 
     # Editing a specific serve's passers_snapshot back to straddling recomputes its seam to True
     straddling = [
@@ -51,8 +68,10 @@ def test_serve_store_crud_and_snapshot_isolation(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         store.load_session("../escape")
 
-    # Delete serve and delete session
+    # Delete serve, clear remaining serves, and delete session
     sess = store.delete_serve(sess.serve_session_id, sess.serves[0].serve_id)
+    assert len(sess.serves) == 1
+    sess = store.clear_serves(sess.serve_session_id)
     assert sess.serves == []
     store.delete_session(sess.serve_session_id)
     with pytest.raises(FileNotFoundError):

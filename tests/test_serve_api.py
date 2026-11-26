@@ -133,6 +133,12 @@ def test_serve_session_full_workflow(tmp_path: Path) -> None:
         assert del_s.status_code == 200
         assert del_s.json()["summary"]["total"] == 0
 
+        # Clear serves route
+        client.post(f"/api/serve-sessions/{sid}/serves", json={"x_m": 2.0, "y_m": 6.0, "result": "in"}, headers=hdr)
+        clr = client.post(f"/api/serve-sessions/{sid}/serves/clear", headers=hdr)
+        assert clr.status_code == 200
+        assert clr.json()["summary"]["total"] == 0
+
         # Trigger auto-detect and wait for completion
         ad_res = client.post(f"/api/serve-sessions/{sid}/auto-detect", json={"server_name": "#7"}, headers=hdr)
         assert ad_res.status_code == 200
@@ -207,7 +213,40 @@ def test_index_contains_tabs_and_serves_serve_tab_js(tmp_path: Path) -> None:
         assert 'id="serveCourtCanvas"' in html
         assert 'id="selectedServeResult"' in html
         assert 'id="toggleCalOverlayBtn"' in html
+        assert 'id="deleteServeSessionBtn"' in html
+        assert 'id="clearServesBtn"' in html
         assert 'class="topbar-left"' in html
         assert "/static/serve_tab.js" in html
         js = client.get("/static/serve_tab.js")
         assert js.status_code == 200
+
+
+def test_duplicate_auto_detect_returns_409(tmp_path: Path) -> None:
+    client, cfg = _make_client(tmp_path)
+    vid = cfg.allowed_local_dirs[0] / "dup_scan.mp4"
+    make_synthetic_baseline_video(vid, duration_s=1.5, fps=15)
+    with client:
+        csrf = client.get("/api/csrf").json()["csrf_token"]
+        hdr = {"X-CSRF-Token": csrf}
+        vid_id = client.post("/api/sessions/local", json={"path": str(vid), "skip_analysis": True}, headers=hdr).json()["session_id"]
+        sid = client.post("/api/serve-sessions", json={"name": "Dup Scan", "video_session_id": vid_id}, headers=hdr).json()["session"]["serve_session_id"]
+        client.post(
+            f"/api/serve-sessions/{sid}/calibration",
+            json={
+                "front_left": {"x": 200.0, "y": 320.0},
+                "front_right": {"x": 850.0, "y": 320.0},
+                "attack_right": {"x": 940.0, "y": 420.0},
+                "attack_left": {"x": 110.0, "y": 420.0},
+            },
+            headers=hdr,
+        )
+        # Simulate an active scanning state on disk
+        from vball_analyser.serve_storage import ServeSessionStore
+
+        sstore = ServeSessionStore(cfg.serve_sessions_dir)
+        sess = sstore.load_session(sid)
+        sess.status = "scanning"
+        sstore.save_session(sess)
+
+        dup = client.post(f"/api/serve-sessions/{sid}/auto-detect", json={"server_name": "#7"}, headers=hdr)
+        assert dup.status_code == 409

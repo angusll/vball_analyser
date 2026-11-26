@@ -177,11 +177,14 @@ def test_end_to_end_local_workflow_range_calibration_hitter_export(tmp_path: Pat
 
 
 def test_static_frontend_and_backend_security_hygiene() -> None:
-    app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     forbidden_js = ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "alert(", "confirm(", "prompt(", "localStorage", "sessionStorage")
-    for token in forbidden_js:
-        assert token not in app_js, f"Forbidden JS pattern {token} found in app.js"
+    js_files = sorted(STATIC_DIR.glob("*.js"))
+    assert js_files, "Expected at least one static JS file"
+    for js_file in js_files:
+        js_text = js_file.read_text(encoding="utf-8")
+        for token in forbidden_js:
+            assert token not in js_text, f"Forbidden JS pattern {token} found in {js_file.name}"
     assert "<script>" not in index_html
     assert "style=" not in index_html
 

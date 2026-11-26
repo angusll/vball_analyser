@@ -168,3 +168,17 @@ def test_predictor_device_batch_defaults_and_weight_resolution(tmp_path: Path) -
     # Bare weight filenames resolve inside models_dir
     bare_pred = YoloGpuPredictor(det_weights="yolo11m.pt", device="cpu", models_dir=tmp_path)
     assert bare_pred._resolve_weights("yolo11m.pt") == str((tmp_path / "yolo11m.pt").resolve())
+
+    # Compiled model load failure falls back cleanly to .pt weights
+    calls: list[str] = []
+
+    def _fake_yolo(path: str, *, task: str) -> str:
+        calls.append(path)
+        if path.endswith(".mlpackage"):
+            raise RuntimeError("broken compiled engine")
+        return f"loaded:{path}:{task}"
+
+    model, resolved = mps_pred._load_yolo_model(_fake_yolo, str(pt), "detect")
+    assert calls == [str(mlpkg), str(pt)]
+    assert resolved == str(pt)
+    assert model == f"loaded:{pt}:detect"

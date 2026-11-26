@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "vball-analyser"
 version = "0.1.0"
 description = "Volleyball baseline training analyser with two-pass GPU vision pipeline and interactive canvas review studio"
-readme = "docs/superpowers/specs/2026-11-26-volleyball-training-analyser-design.md"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "av>=19.0.2",

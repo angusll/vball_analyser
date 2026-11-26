@@ -31,6 +31,7 @@ from vball_analyser.serve_geometry import (
 from vball_analyser.video_io import iter_video_frames
 
 REFRACTORY_GAP_S = 2.5
+POST_RECEIVE_COOLDOWN_S = 6.0
 MIN_DESCENT_PX = 45.0
 MIN_DESCENT_DURATION_S = 0.20
 PRE_SERVE_OFFSET_S = 0.60
@@ -307,7 +308,7 @@ def detect_serve_events(
 
     windows = _extract_candidate_windows(video_path, metadata, net_cal, predictor, net_center_y, net_tape_y)
     events: list[ServeEvent] = []
-    last_event_t = -1e9
+    next_allowed_t = -1e9
 
     for w_start, w_end in windows:
         frames = list(iter_video_frames(video_path, start_s=w_start, end_s=w_end))
@@ -319,7 +320,7 @@ def detect_serve_events(
         landings = _find_serve_landing_balls(series, net_center_y=net_center_y, net_tape_y=net_tape_y)
 
         for land_ball in landings:
-            if land_ball.timestamp_s - last_event_t < REFRACTORY_GAP_S:
+            if land_ball.timestamp_s < next_allowed_t:
                 continue
 
             t_pre = max(w_start, land_ball.timestamp_s - PRE_SERVE_OFFSET_S)
@@ -367,10 +368,7 @@ def detect_serve_events(
                     passers_snapshot=passers,
                 )
             )
-            last_event_t = land_ball.timestamp_s
-            # Once the first serve and receive are detected in this rally/window, stop scanning
-            # so ongoing rally touches (passes, sets, digs, free balls) are not logged as serves.
-            if receiver is not None:
-                break
+            cooldown = POST_RECEIVE_COOLDOWN_S if receiver is not None else REFRACTORY_GAP_S
+            next_allowed_t = land_ball.timestamp_s + cooldown
 
     return events
