@@ -10,22 +10,29 @@
   <a href="#stageMain" class="skip-link">Skip to review stage</a>
 
   <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="9"/>
-          <path d="M4.6 7.5c4.2 1.1 7.3 4.2 8.4 8.4"/>
-          <path d="M19.4 16.5c-4.2-1.1-7.3-4.2-8.4-8.4"/>
-          <path d="M7.5 19.4c1.6-3.7 5.2-6.2 9.4-6.4"/>
-        </svg>
-      </span>
-      <div class="brand-copy">
-        <h1>VBall Analyser</h1>
-        <span class="brand-sub">Baseline Set &amp; Hit Studio</span>
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M4.6 7.5c4.2 1.1 7.3 4.2 8.4 8.4"/>
+            <path d="M19.4 16.5c-4.2-1.1-7.3-4.2-8.4-8.4"/>
+            <path d="M7.5 19.4c1.6-3.7 5.2-6.2 9.4-6.4"/>
+          </svg>
+        </span>
+        <div class="brand-copy">
+          <h1>VBall Analyser</h1>
+          <span class="brand-sub">Baseline Studio &amp; Serve Recorder</span>
+        </div>
       </div>
+
+      <nav class="tab-switcher" role="tablist" aria-label="Workspace tabs">
+        <button id="tabStudioBtn" class="tab-btn active" type="button" role="tab" data-tab="studio" aria-selected="true">Set &amp; Hit Studio</button>
+        <button id="tabServeBtn" class="tab-btn" type="button" role="tab" data-tab="serve" aria-selected="false">Serve Distribution</button>
+      </nav>
     </div>
 
-    <div class="toolbar-actions">
+    <div class="toolbar-actions" data-studio-only>
       <button id="openLoadBtn" class="btn btn-primary" type="button">
         <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M8 10V3"/>
@@ -46,7 +53,7 @@
       </div>
     </div>
 
-    <div class="overlay-toggles" role="group" aria-label="Overlay layers">
+    <div class="overlay-toggles" role="group" aria-label="Overlay layers" data-studio-only>
       <button class="pill active" data-overlay="setArc" type="button" aria-pressed="true">
         <span class="pill-dot dot-arc" aria-hidden="true"></span>
         <span>Set Arc</span>
@@ -266,6 +273,143 @@
     </aside>
   </main>
 
+  <main id="serveTab" class="serve-grid hidden" aria-label="Serve distribution recorder">
+    <section class="serve-stage-column">
+      <div class="serve-toolbar">
+        <div class="serve-toolbar-group">
+          <select id="serveSessionSelect" class="select-input" aria-label="Serve practice sessions"></select>
+          <button id="newServeSessionBtn" class="btn btn-secondary btn-small" type="button">+ New Session</button>
+          <button id="deleteServeSessionBtn" class="btn btn-ghost btn-small" type="button" title="Delete the active serve session">Delete</button>
+          <select id="serveVideoSelect" class="select-input" aria-label="Linked video session"></select>
+          <button id="serveLoadVideoBtn" class="btn btn-secondary btn-small" type="button">Load Video</button>
+        </div>
+        <div class="serve-toolbar-group">
+          <button id="calibrateNetCourtBtn" class="btn btn-secondary btn-small" type="button" title="Click left &amp; right net antenna tops, then any point on a near-court sideline">Calibrate via Net (3 Clicks)</button>
+          <button id="calibrateCourtBtn" class="btn btn-ghost btn-small" type="button" title="Advanced: click 4 corners of the front 3m floor rectangle">4-Corner Floor</button>
+          <button id="toggleCalOverlayBtn" class="pill active hidden" type="button" aria-pressed="true" title="Show or hide the calibration lines drawn over the video">Calibration Lines</button>
+          <button id="autoDetectServesBtn" class="btn btn-primary btn-small" type="button">Auto-Detect Serves</button>
+          <div id="serveStatusBadge" class="status-pill status-idle" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="serveStatusText">Ready</span>
+          </div>
+          <progress id="serveProgress" class="analysis-progress hidden" max="100" value="0" aria-label="Serve scan progress"></progress>
+        </div>
+      </div>
+
+      <div id="serveMessageBanner" class="serve-banner hidden" role="status" aria-live="polite"></div>
+
+      <div class="serve-workspace">
+        <div id="serveVideoCard" class="serve-panel serve-video-panel hidden">
+          <div class="serve-panel-header">
+            <div class="serve-panel-title">
+              <h2>Video Reference &amp; Net Calibration</h2>
+              <span id="serveCalBadge" class="cal-scale-badge">Uncalibrated</span>
+            </div>
+            <div class="serve-panel-actions">
+              <span id="serveCalHint" class="mode-hint hidden"></span>
+              <button id="cancelServeCalBtn" class="btn btn-ghost btn-small hidden" type="button">Cancel</button>
+              <button id="servePlayPauseBtn" class="btn btn-secondary btn-small" type="button">Play</button>
+              <span id="serveVideoTime" class="time-readout">0.00s</span>
+            </div>
+          </div>
+          <div id="serveVideoStage" class="serve-video-stage">
+            <video id="serveVideo" playsinline preload="auto"></video>
+            <canvas id="serveVideoCanvas"></canvas>
+          </div>
+          <div class="serve-video-scrub">
+            <input id="serveSeekSlider" class="seek-slider" type="range" min="0" max="1" step="0.01" value="0" aria-label="Serve video timeline">
+          </div>
+        </div>
+
+        <div class="serve-panel serve-court-panel">
+          <div class="serve-panel-header">
+            <div class="serve-panel-title">
+              <h2>Receiving Court (9m &times; 9m)</h2>
+              <div class="formation-group" role="group" aria-label="Passer formation presets">
+                <button class="speed-btn serve-formation-btn" data-formation="2" type="button">2-Passer</button>
+                <button class="speed-btn serve-formation-btn active" data-formation="3" type="button">3-Passer</button>
+                <button class="speed-btn serve-formation-btn" data-formation="4" type="button">4-Passer</button>
+              </div>
+            </div>
+            <div class="serve-panel-actions">
+              <button id="toggleDotsBtn" class="pill active" type="button" aria-pressed="true">Dots</button>
+              <button id="toggleHeatmapBtn" class="pill" type="button" aria-pressed="false">Heatmap</button>
+              <button id="toggleSeamsBtn" class="pill active" type="button" aria-pressed="true">Seams</button>
+            </div>
+          </div>
+
+          <div class="serve-court-wrap">
+            <canvas id="serveCourtCanvas" class="serve-court-canvas"></canvas>
+          </div>
+
+          <div class="serve-court-footer">
+            <span id="serveSelectionInfo" class="serve-selection-info">Click court to log serve &middot; Drag passers to adjust formation</span>
+            <div class="serve-footer-btns">
+              <select id="selectedServeResult" class="select-input select-compact hidden" aria-label="Selected serve result">
+                <option value="in">Result: In</option>
+                <option value="ace">Result: Ace</option>
+                <option value="out">Result: Out</option>
+                <option value="net">Result: Net</option>
+              </select>
+              <button id="deselectServeBtn" class="btn btn-ghost btn-small hidden" type="button">Deselect</button>
+              <button id="undoServeBtn" class="btn btn-secondary btn-small" type="button">Undo</button>
+              <button id="clearServesBtn" class="btn btn-ghost btn-small" type="button" title="Clear all serves in this session">Clear</button>
+              <button id="resetPassersBtn" class="btn btn-secondary btn-small" type="button">Reset Passers</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="sidebar serve-sidebar" aria-label="Serve distribution controls and summary">
+      <div class="sidebar-section">
+        <div class="sidebar-header">
+          <h3>Server</h3>
+        </div>
+        <div id="serverChips" class="server-chips" role="group" aria-label="Filter or select server"></div>
+        <form id="addServerForm" class="inline-add-form">
+          <input id="newServerInput" class="text-input" type="text" maxlength="32" placeholder="Add server (e.g. #7)">
+          <button class="btn btn-secondary btn-small" type="submit">Add</button>
+        </form>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-header">
+          <h3>Manual Click Result</h3>
+        </div>
+        <div id="resultModeGroup" class="result-mode-group" role="group" aria-label="Manual serve result">
+          <button class="pill active" data-result="in" type="button" aria-pressed="true">In</button>
+          <button class="pill" data-result="ace" type="button" aria-pressed="false">Ace</button>
+          <button class="pill" data-result="net" type="button" aria-pressed="false">Net Error</button>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-header">
+          <h3>Distribution Summary</h3>
+          <span id="serveTotalBadge" class="count-badge">0</span>
+        </div>
+        <div id="serveSummaryCards" class="serve-kpi-grid"></div>
+        <div id="serveSeamPairs" class="serve-seam-pairs"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-header">
+          <h3>Area Breakdown (Z1&ndash;Z6)</h3>
+          <span id="serveDepthBadge" class="unit-badge">Short 0 &middot; Deep 0</span>
+        </div>
+        <div id="serveZoneBars" class="zone-bars"></div>
+      </div>
+
+      <div class="sidebar-section serve-log-section">
+        <div class="sidebar-header">
+          <h3>Serve Log</h3>
+        </div>
+        <div id="serveLogList" class="serve-log-list" role="list"></div>
+      </div>
+    </aside>
+  </main>
+
   <dialog id="loadDialog" class="modal-dialog" aria-labelledby="loadDialogTitle">
     <div class="modal-card">
       <div class="modal-header">
@@ -309,5 +453,6 @@
   </dialog>
 
   <script src="/static/app.js" defer></script>
+  <script src="/static/serve_tab.js" defer></script>
 </body>
 </html>

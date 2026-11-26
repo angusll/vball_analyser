@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "vball-analyser"
 version = "0.1.0"
 description = "Volleyball baseline training analyser with two-pass GPU vision pipeline and interactive canvas review studio"
-readme = "docs/superpowers/specs/2026-11-26-volleyball-training-analyser-design.md"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "av>=19.0.2",
@@ -23,6 +23,15 @@ dependencies = [
 
 [project.scripts]
 vball-analyser = "vball_analyser.app:main"
+
+[project.optional-dependencies]
+tensorrt = [
+    "nvidia-modelopt[onnx]>=0.44",
+    "onnx>=1.21.0",
+    "onnxruntime-gpu",
+    "onnxslim>=0.1.99",
+    "tensorrt>=11.5.0.63",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vball_analyser"]

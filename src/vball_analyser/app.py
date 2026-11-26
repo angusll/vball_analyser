@@ -10,7 +10,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -26,7 +26,7 @@ from vball_analyser.detector import (
     analyse_play_window,
     scan_candidate_plays,
 )
-from vball_analyser.models import AnalysisSession, Point2D
+from vball_analyser.models import AnalysisSession, CourtCalibration, PasserPosition, Point2D, ServeSession
 from vball_analyser.renderer import export_annotated_play_mp4
 from vball_analyser.security import (
     ALLOWED_HTTP_METHODS,
@@ -37,6 +37,9 @@ from vball_analyser.security import (
     resolve_secret_key,
     validate_local_video_path,
 )
+from vball_analyser.serve_detector import detect_serve_events
+from vball_analyser.serve_geometry import compute_distribution_summary, interpolate_court_from_net
+from vball_analyser.serve_storage import ServeSessionStore
 from vball_analyser.storage import SessionStore, validate_safe_id
 from vball_analyser.video_io import (
     ensure_web_playable_mp4,
@@ -52,6 +55,57 @@ logger = logging.getLogger(__name__)
 class LocalVideoRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1024)
     net_height_m: float = Field(default=2.43, ge=1.8, le=2.7)
+    skip_analysis: bool = False
+
+
+class CreateServeSessionRequest(BaseModel):
+    name: str = Field(default="Practice Session", max_length=80)
+    video_session_id: str | None = None
+
+
+class UpdateServeSessionRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+    video_session_id: str | None = None
+    clear_video_session: bool = False
+    servers: list[str] | None = None
+    default_passers: list[PasserPosition] | None = None
+
+
+class CourtCalibrationRequest(BaseModel):
+    front_left: Point2D
+    front_right: Point2D
+    attack_right: Point2D
+    attack_left: Point2D
+
+
+class NetCourtCalibrationRequest(BaseModel):
+    left_top: Point2D
+    right_top: Point2D
+    sideline_point: Point2D | None = None
+    net_height_m: float = Field(default=2.43, ge=1.8, le=2.7)
+    attack_line_y: float | None = None
+
+
+class AutoDetectServesRequest(BaseModel):
+    server_name: str = Field(default="Unassigned", max_length=32)
+
+
+class AddServeRequest(BaseModel):
+    x_m: float = Field(ge=-3.0, le=12.0)
+    y_m: float = Field(ge=-2.0, le=13.0)
+    result: Literal["in", "ace", "out", "net"] = "in"
+    server_name: str = Field(default="Unassigned", max_length=32)
+    timestamp_s: float | None = Field(default=None, ge=0.0)
+    frame_idx: int | None = Field(default=None, ge=0)
+    passers_snapshot: list[PasserPosition] | None = None
+
+
+class UpdateServeRequest(BaseModel):
+    x_m: float | None = Field(default=None, ge=-3.0, le=12.0)
+    y_m: float | None = Field(default=None, ge=-2.0, le=13.0)
+    result: Literal["in", "ace", "out", "net"] | None = None
+    server_name: str | None = Field(default=None, max_length=32)
+    passers_snapshot: list[PasserPosition] | None = None
 
 
 class CalibrationRequest(BaseModel):
@@ -99,8 +153,12 @@ def create_app(
         window_s=config.rate_limit_window_s,
     )
     store = SessionStore(config.sessions_dir)
-    active_predictor: FramePredictor = predictor if predictor is not None else YoloGpuPredictor()
+    serve_store = ServeSessionStore(config.serve_sessions_dir)
+    active_predictor: FramePredictor = (
+        predictor if predictor is not None else YoloGpuPredictor(models_dir=config.models_dir)
+    )
     active_tasks: set[asyncio.Task[None]] = set()
+    gpu_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -173,36 +231,37 @@ def create_app(
             session.progress_pct = 25.0
             store.save_session(session)
 
-            windows = await asyncio.to_thread(
-                scan_candidate_plays, web_mp4, session.calibration, active_predictor, session.metadata
-            )
-            if not windows:
-                windows = [(0.0, min(session.metadata.duration_s, 6.0))]
-
-            session.status = "analysing"
-            session.progress_pct = 35.0
-            store.save_session(session)
-
-            total = max(1, len(windows))
-            for idx, (w_start, w_end) in enumerate(windows, start=1):
-                # Re-read calibration in case user adjusted 2-click endpoints while scanning
-                latest = store.load_session(session_id)
-                cal_to_use = latest.calibration
-                play, raw_balls = await asyncio.to_thread(
-                    analyse_play_window,
-                    web_mp4,
-                    idx,
-                    w_start,
-                    w_end,
-                    cal_to_use,
-                    active_predictor,
-                    latest.metadata,
-                    sdir,
+            async with gpu_lock:
+                windows = await asyncio.to_thread(
+                    scan_candidate_plays, web_mp4, session.calibration, active_predictor, session.metadata
                 )
-                store.save_play_ball_cache(session_id, play.play_id, raw_balls)
-                latest.plays.append(play)
-                latest.progress_pct = round(35.0 + 65.0 * (idx / total), 1)
-                store.save_session(latest)
+                if not windows:
+                    windows = [(0.0, min(session.metadata.duration_s, 6.0))]
+
+                session.status = "analysing"
+                session.progress_pct = 35.0
+                store.save_session(session)
+
+                total = max(1, len(windows))
+                for idx, (w_start, w_end) in enumerate(windows, start=1):
+                    # Re-read calibration in case user adjusted 2-click endpoints while scanning
+                    latest = store.load_session(session_id)
+                    cal_to_use = latest.calibration
+                    play, raw_balls = await asyncio.to_thread(
+                        analyse_play_window,
+                        web_mp4,
+                        idx,
+                        w_start,
+                        w_end,
+                        cal_to_use,
+                        active_predictor,
+                        latest.metadata,
+                        sdir,
+                    )
+                    store.save_play_ball_cache(session_id, play.play_id, raw_balls)
+                    latest.plays.append(play)
+                    latest.progress_pct = round(35.0 + 65.0 * (idx / total), 1)
+                    store.save_session(latest)
 
             final_sess = store.load_session(session_id)
             final_sess.status = "ready"
@@ -265,6 +324,7 @@ def create_app(
         request: Request,
         file: UploadFile = File(...),
         net_height_m: float = Form(2.43),
+        skip_analysis: bool = Form(False),
     ) -> JSONResponse:
         _require_csrf(request)
         if not (1.8 <= net_height_m <= 2.7):
@@ -312,18 +372,23 @@ def create_app(
 
         initial_cal = auto_detect_net_tape([])
         initial_cal.net_height_m = net_height_m
+        if skip_analysis:
+            web_mp4 = await asyncio.to_thread(ensure_web_playable_mp4, dest_path, sdir)
+            if web_mp4 != dest_path:
+                meta = await asyncio.to_thread(probe_video, web_mp4)
         session = AnalysisSession(
             session_id=session_id,
             filename=raw_name,
             created_at=datetime.now(timezone.utc).isoformat(),
-            status="queued",
-            progress_pct=0.0,
+            status="ready" if skip_analysis else "queued",
+            progress_pct=100.0 if skip_analysis else 0.0,
             metadata=meta,
             calibration=initial_cal,
             plays=[],
         )
         store.save_session(session)
-        _schedule_analysis(session_id, dest_path)
+        if not skip_analysis:
+            _schedule_analysis(session_id, dest_path)
         return JSONResponse(session.model_dump())
 
     @app.post("/api/sessions/local")
@@ -350,18 +415,23 @@ def create_app(
 
         initial_cal = auto_detect_net_tape([])
         initial_cal.net_height_m = body.net_height_m
+        if body.skip_analysis:
+            web_mp4 = await asyncio.to_thread(ensure_web_playable_mp4, resolved, sdir)
+            if web_mp4 != resolved:
+                meta = await asyncio.to_thread(probe_video, web_mp4)
         session = AnalysisSession(
             session_id=session_id,
             filename=resolved.name,
             created_at=datetime.now(timezone.utc).isoformat(),
-            status="queued",
-            progress_pct=0.0,
+            status="ready" if body.skip_analysis else "queued",
+            progress_pct=100.0 if body.skip_analysis else 0.0,
             metadata=meta,
             calibration=initial_cal,
             plays=[],
         )
         store.save_session(session)
-        _schedule_analysis(session_id, resolved)
+        if not body.skip_analysis:
+            _schedule_analysis(session_id, resolved)
         return JSONResponse(session.model_dump())
 
     @app.get("/api/sessions/{session_id}")
@@ -479,17 +549,18 @@ def create_app(
             start_s = max(0.0, center - 2.5)
             end_s = min(dur, center + 1.5)
 
-        play, raw_balls = await asyncio.to_thread(
-            analyse_play_window,
-            video_path,
-            len(session.plays) + 1,
-            start_s,
-            end_s,
-            session.calibration,
-            active_predictor,
-            session.metadata,
-            sdir,
-        )
+        async with gpu_lock:
+            play, raw_balls = await asyncio.to_thread(
+                analyse_play_window,
+                video_path,
+                len(session.plays) + 1,
+                start_s,
+                end_s,
+                session.calibration,
+                active_predictor,
+                session.metadata,
+                sdir,
+            )
         store.save_play_ball_cache(session_id, play.play_id, raw_balls)
         session.plays.append(play)
         session.plays.sort(key=lambda p: p.start_time_s)
@@ -586,6 +657,293 @@ def create_app(
                 "X-Content-Type-Options": "nosniff",
             },
         )
+
+    def _serve_payload(session: ServeSession, server_filter: str | None = None) -> dict:
+        return {
+            "session": session.model_dump(),
+            "summary": compute_distribution_summary(session.serves, server_filter=server_filter).model_dump(),
+        }
+
+    async def _run_serve_auto_detect(serve_session_id: str, server_name: str) -> None:
+        try:
+            serve_sess = serve_store.load_session(serve_session_id)
+            if not serve_sess.video_session_id or serve_sess.court_calibration is None:
+                raise ValueError("Video session and court calibration are required.")
+            video_sess = store.load_session(serve_sess.video_session_id)
+            video_path = store.resolve_web_video_path(serve_sess.video_session_id)
+
+            serve_sess.status = "scanning"
+            serve_sess.progress_pct = 20.0
+            serve_sess.error_message = None
+            serve_store.save_session(serve_sess)
+
+            async with gpu_lock:
+                detected = await asyncio.to_thread(
+                    detect_serve_events,
+                    video_path,
+                    serve_sess.court_calibration,
+                    active_predictor,
+                    video_sess.metadata,
+                    server_name,
+                )
+
+            updated = serve_store.replace_auto_serves(serve_session_id, detected)
+            updated.status = "ready"
+            updated.progress_pct = 100.0
+            updated.error_message = None
+            serve_store.save_session(updated)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Serve auto-detection failed for session %s", serve_session_id)
+            try:
+                err_sess = serve_store.load_session(serve_session_id)
+                err_sess.status = "error"
+                err_sess.error_message = "Serve auto-detection failed. Check server logs for details."
+                serve_store.save_session(err_sess)
+            except Exception:
+                pass
+
+    @app.get("/api/serve-sessions")
+    async def list_serve_sessions() -> list[dict]:
+        return [s.model_dump() for s in serve_store.list_sessions()]
+
+    @app.post("/api/serve-sessions")
+    async def create_serve_session(request: Request, body: CreateServeSessionRequest) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            if body.video_session_id is not None:
+                store.load_session(body.video_session_id)
+            sess = serve_store.create_session(name=body.name, video_session_id=body.video_session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Linked video session not found.") from exc
+        return JSONResponse(_serve_payload(sess))
+
+    @app.get("/api/serve-sessions/{serve_session_id}")
+    async def get_serve_session(serve_session_id: str, server: str | None = None) -> JSONResponse:
+        try:
+            sess = serve_store.load_session(serve_session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/update")
+    async def update_serve_session(
+        serve_session_id: str,
+        request: Request,
+        body: UpdateServeSessionRequest,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            kwargs: dict = {
+                "name": body.name,
+                "servers": body.servers,
+                "default_passers": body.default_passers,
+            }
+            if body.clear_video_session:
+                kwargs["video_session_id"] = None
+            elif body.video_session_id is not None:
+                store.load_session(body.video_session_id)
+                kwargs["video_session_id"] = body.video_session_id
+            sess = serve_store.update_session(serve_session_id, **kwargs)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/delete")
+    async def delete_serve_session(serve_session_id: str, request: Request) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            serve_store.delete_session(serve_session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse({"status": "deleted"})
+
+    @app.post("/api/serve-sessions/{serve_session_id}/calibration")
+    async def save_serve_calibration(
+        serve_session_id: str,
+        request: Request,
+        body: CourtCalibrationRequest,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            cal = CourtCalibration(
+                front_left=body.front_left,
+                front_right=body.front_right,
+                attack_right=body.attack_right,
+                attack_left=body.attack_left,
+                is_calibrated=True,
+            )
+            sess = serve_store.save_calibration(serve_session_id, cal)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/calibration/from-net")
+    async def save_serve_calibration_from_net(
+        serve_session_id: str,
+        request: Request,
+        body: NetCourtCalibrationRequest,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            current = serve_store.load_session(serve_session_id)
+            img_w = 1280
+            if current.video_session_id:
+                try:
+                    img_w = store.load_session(current.video_session_id).metadata.width
+                except FileNotFoundError:
+                    pass
+            cal = interpolate_court_from_net(
+                left_top=body.left_top,
+                right_top=body.right_top,
+                image_width=img_w,
+                net_height_m=body.net_height_m,
+                attack_line_y=body.attack_line_y,
+                sideline_point=body.sideline_point,
+            )
+            sess = serve_store.save_calibration(serve_session_id, cal)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/auto-detect")
+    async def trigger_serve_auto_detect(
+        serve_session_id: str,
+        request: Request,
+        body: AutoDetectServesRequest,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            sess = serve_store.load_session(serve_session_id)
+            if sess.status == "scanning":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Serve auto-detection is already running for this session.",
+                )
+            if not sess.video_session_id:
+                raise ValueError("Link a video session before running serve auto-detection.")
+            if sess.court_calibration is None or not sess.court_calibration.is_calibrated:
+                raise ValueError("Calibrate the court (via Net or 4-Corner Floor) before auto-detection.")
+            store.resolve_web_video_path(sess.video_session_id)
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session or linked video not found.") from exc
+
+        sess.status = "scanning"
+        sess.progress_pct = 5.0
+        sess.error_message = None
+        serve_store.save_session(sess)
+
+        task = asyncio.create_task(_run_serve_auto_detect(serve_session_id, body.server_name))
+        active_tasks.add(task)
+        task.add_done_callback(active_tasks.discard)
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/serves")
+    async def add_serve_event(
+        serve_session_id: str,
+        request: Request,
+        body: AddServeRequest,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            sess = serve_store.add_serve(
+                serve_session_id,
+                x_m=body.x_m,
+                y_m=body.y_m,
+                result=body.result,
+                server_name=body.server_name,
+                source="manual",
+                timestamp_s=body.timestamp_s,
+                frame_idx=body.frame_idx,
+                passers_snapshot=body.passers_snapshot,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/serves/{serve_id}/update")
+    async def update_serve_event(
+        serve_session_id: str,
+        serve_id: str,
+        request: Request,
+        body: UpdateServeRequest,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            sess = serve_store.update_serve(
+                serve_session_id,
+                serve_id,
+                x_m=body.x_m,
+                y_m=body.y_m,
+                result=body.result,
+                server_name=body.server_name,
+                passers_snapshot=body.passers_snapshot,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/serves/clear")
+    async def clear_serve_events(
+        serve_session_id: str,
+        request: Request,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            sess = serve_store.clear_serves(serve_session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
+
+    @app.post("/api/serve-sessions/{serve_session_id}/serves/{serve_id}/delete")
+    async def delete_serve_event(
+        serve_session_id: str,
+        serve_id: str,
+        request: Request,
+        server: str | None = None,
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            sess = serve_store.delete_serve(serve_session_id, serve_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Serve session not found.") from exc
+        return JSONResponse(_serve_payload(sess, server_filter=server))
 
     return app
 

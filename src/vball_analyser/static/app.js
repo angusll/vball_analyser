@@ -27,6 +27,8 @@ const state = {
   hoverTrackId: null,
   uploading: false,
   pollTimer: null,
+  activeTab: "studio",
+  loadModalMode: "studio",
 };
 
 const els = {
@@ -1185,12 +1187,14 @@ async function submitVideoFile(file) {
 
   state.uploading = true;
   els.uploadSubmitBtn.disabled = true;
-  els.uploadSubmitBtn.textContent = "Uploading & Analysing...";
+  const isServeMode = state.loadModalMode === "serve";
+  els.uploadSubmitBtn.textContent = isServeMode ? "Uploading Video..." : "Uploading & Analysing...";
   try {
     if (!state.csrfToken) await fetchCsrf();
     const formData = new FormData();
     formData.append("file", file);
     formData.append("net_height_m", els.netHeightSelect.value);
+    if (isServeMode) formData.append("skip_analysis", "true");
     const res = await fetch("/api/sessions/upload", {
       method: "POST",
       credentials: "same-origin",
@@ -1205,26 +1209,72 @@ async function submitVideoFile(file) {
     }
     const sess = await res.json();
     if (els.loadDialog.open) els.loadDialog.close();
-    applySession(sess, true);
+    if (isServeMode && window.VBallServeTab && typeof window.VBallServeTab.onVideoLoaded === "function") {
+      await window.VBallServeTab.onVideoLoaded(sess);
+    } else {
+      applySession(sess, true);
+    }
     refreshSessionsDropdown();
   } catch (err) {
     els.loadError.textContent = err.message || "Upload failed.";
     if (!els.loadDialog.open) els.loadDialog.showModal();
   } finally {
     state.uploading = false;
+    state.loadModalMode = "studio";
     els.uploadSubmitBtn.disabled = false;
     els.uploadSubmitBtn.textContent = "Upload & Analyse";
   }
 }
 
 function setupEventListeners() {
-  const openModal = () => {
+  const openModal = (mode = "studio") => {
+    state.loadModalMode = mode;
     els.loadError.textContent = "";
+    els.uploadSubmitBtn.textContent = mode === "serve" ? "Upload Video" : "Upload & Analyse";
+    els.localSubmitBtn.textContent = mode === "serve" ? "Load Local Video" : "Analyse Local File";
     els.loadDialog.showModal();
   };
-  els.openLoadBtn.addEventListener("click", openModal);
-  els.emptyLoadBtn.addEventListener("click", openModal);
+  els.openLoadBtn.addEventListener("click", () => openModal("studio"));
+  els.emptyLoadBtn.addEventListener("click", () => openModal("studio"));
   els.closeLoadBtn.addEventListener("click", () => els.loadDialog.close());
+  els.loadDialog.addEventListener("close", () => {
+    state.loadModalMode = "studio";
+  });
+
+  function switchTab(tabName) {
+    state.activeTab = tabName;
+    const isServe = tabName === "serve";
+    const studioMain = document.getElementById("stageMain");
+    const serveMain = document.getElementById("serveTab");
+    if (studioMain) studioMain.classList.toggle("hidden", isServe);
+    if (serveMain) serveMain.classList.toggle("hidden", !isServe);
+    document.querySelectorAll("[data-studio-only]").forEach((el) => {
+      el.classList.toggle("hidden", isServe);
+    });
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      const active = btn.getAttribute("data-tab") === tabName;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    if (isServe) {
+      if (window.VBallServeTab && typeof window.VBallServeTab.onTabActivated === "function") {
+        window.VBallServeTab.onTabActivated();
+      }
+    } else {
+      renderOverlay();
+    }
+  }
+
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => switchTab(btn.getAttribute("data-tab") || "studio"));
+  });
+
+  window.VBallShared = {
+    apiPostJson,
+    fetchCsrf,
+    openLoadModalForServeTab: () => openModal("serve"),
+    refreshSessionsDropdown,
+  };
   els.loadDialog.addEventListener("click", (ev) => {
     if (ev.target === els.loadDialog) els.loadDialog.close();
   });
@@ -1284,19 +1334,26 @@ function setupEventListeners() {
       els.loadError.textContent = "Enter a local file path.";
       return;
     }
+    const isServeMode = state.loadModalMode === "serve";
     els.localSubmitBtn.disabled = true;
     els.localSubmitBtn.textContent = "Loading Local File...";
     try {
       const sess = await apiPostJson("/api/sessions/local", {
         path: rawPath,
         net_height_m: parseFloat(els.netHeightSelect.value),
+        skip_analysis: isServeMode,
       });
       els.loadDialog.close();
-      applySession(sess, true);
+      if (isServeMode && window.VBallServeTab && typeof window.VBallServeTab.onVideoLoaded === "function") {
+        await window.VBallServeTab.onVideoLoaded(sess);
+      } else {
+        applySession(sess, true);
+      }
       refreshSessionsDropdown();
     } catch (err) {
       els.loadError.textContent = err.message;
     } finally {
+      state.loadModalMode = "studio";
       els.localSubmitBtn.disabled = false;
       els.localSubmitBtn.textContent = "Analyse Local File";
     }
@@ -1502,6 +1559,7 @@ function setupEventListeners() {
   window.addEventListener("resize", renderOverlay);
 
   document.addEventListener("keydown", (ev) => {
+    if (state.activeTab !== "studio") return;
     if (ev.code === "Escape" && (state.calibratingNet || state.reassigningHitter)) {
       ev.preventDefault();
       setInteractiveMode(false, false);

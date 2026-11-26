@@ -22,6 +22,7 @@ def _parse_allowed_local_dirs() -> tuple[Path, ...]:
 @dataclass(frozen=True)
 class AppConfig:
     data_dir: Path = field(default_factory=lambda: Path(os.environ.get("VBALL_DATA_DIR", str(PROJECT_ROOT / "data"))).resolve())
+    models_dir: Path = field(default_factory=lambda: Path(os.environ.get("VBALL_MODELS_DIR", str(PROJECT_ROOT / "models"))).resolve())
     secret_file: Path = field(default_factory=lambda: Path(os.environ.get("VBALL_SECRET_FILE", str(PROJECT_ROOT / ".vball_secret"))).resolve())
     allowed_local_dirs: tuple[Path, ...] = field(default_factory=_parse_allowed_local_dirs)
     max_upload_bytes: int = int(os.environ.get("VBALL_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
@@ -38,6 +39,10 @@ class AppConfig:
     @property
     def sessions_dir(self) -> Path:
         return self.data_dir / "sessions"
+
+    @property
+    def serve_sessions_dir(self) -> Path:
+        return self.data_dir / "serve_sessions"
 
 
 DEFAULT_CONFIG = AppConfig()

@@ -129,3 +129,73 @@ class AnalysisSession(BaseModel):
     metadata: VideoMetadata
     calibration: NetCalibration
     plays: list[PlayAnalysis] = Field(default_factory=list)
+
+
+class CourtCalibration(BaseModel):
+    """Court floor homography from either 2-click net interpolation or 4-corner front-3m clicks."""
+
+    front_left: Point2D
+    front_right: Point2D
+    attack_right: Point2D
+    attack_left: Point2D
+    is_calibrated: bool = True
+    method: Literal["net", "four_corner"] = "four_corner"
+    net_left_top: Point2D | None = None
+    net_right_top: Point2D | None = None
+    sideline_point: Point2D | None = None
+    net_height_m: float = 2.43
+
+
+class PasserPosition(BaseModel):
+    label: str = Field(min_length=1, max_length=24)
+    x_m: float
+    y_m: float
+
+
+class ServeEvent(BaseModel):
+    serve_id: str
+    index: int
+    source: Literal["auto", "manual"] = "manual"
+    timestamp_s: float | None = None
+    frame_idx: int | None = None
+    server_name: str = "Unassigned"
+    x_m: float
+    y_m: float
+    result: Literal["in", "ace", "out", "net"] = "in"
+    zone: str = "Zone 6"
+    depth: Literal["short", "deep", "out"] = "deep"
+    is_seam: bool = False
+    seam_pair: tuple[str, str] | None = None
+    passers_snapshot: list[PasserPosition] = Field(default_factory=list)
+
+
+class ServeDistributionSummary(BaseModel):
+    total: int = 0
+    in_count: int = 0
+    ace_count: int = 0
+    out_count: int = 0
+    net_count: int = 0
+    in_pct: float = 0.0
+    ace_pct: float = 0.0
+    error_pct: float = 0.0
+    seam_count: int = 0
+    seam_pct: float = 0.0
+    seam_by_pair: dict[str, int] = Field(default_factory=dict)
+    zone_counts: dict[str, int] = Field(default_factory=dict)
+    zone_pcts: dict[str, float] = Field(default_factory=dict)
+    short_count: int = 0
+    deep_count: int = 0
+
+
+class ServeSession(BaseModel):
+    serve_session_id: str
+    name: str
+    created_at: str
+    video_session_id: str | None = None
+    status: Literal["idle", "scanning", "ready", "error"] = "idle"
+    progress_pct: float = 0.0
+    error_message: str | None = None
+    court_calibration: CourtCalibration | None = None
+    default_passers: list[PasserPosition] = Field(default_factory=list)
+    servers: list[str] = Field(default_factory=list)
+    serves: list[ServeEvent] = Field(default_factory=list)

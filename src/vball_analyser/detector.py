@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import math
+import os
 import uuid
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import cv2
 import numpy as np
@@ -45,31 +47,151 @@ class FramePredictor(Protocol):
     ) -> tuple[list[BallDetection], list[tuple[int, float, tuple[float, float, float, float]]]]: ...
 
 
-class YoloGpuPredictor:
-    """Lazy-loading YOLO11 + ByteTrack predictor accelerated on CUDA when available."""
+def detect_inference_device(torch_module: object | None = None) -> str:
+    """Auto-detect the best available accelerator: CUDA (NVIDIA) -> XPU (Intel) -> MPS (Apple) -> CPU.
 
-    def __init__(self, det_weights: str = "yolo11m.pt", pose_weights: str = "yolo11m-pose.pt") -> None:
+    Honors the ``VBALL_DEVICE`` environment variable when set (e.g. ``cpu``, ``cuda:0``, ``mps``, ``xpu:0``).
+    """
+    override = os.environ.get("VBALL_DEVICE", "").strip()
+    if override:
+        return override
+
+    if torch_module is None:
+        import torch as torch_module
+
+    cuda = getattr(torch_module, "cuda", None)
+    if cuda is not None and callable(getattr(cuda, "is_available", None)) and cuda.is_available():
+        return "cuda:0"
+
+    xpu = getattr(torch_module, "xpu", None)
+    if xpu is not None and callable(getattr(xpu, "is_available", None)) and xpu.is_available():
+        return "xpu:0"
+
+    backends = getattr(torch_module, "backends", None)
+    mps = getattr(backends, "mps", None) if backends is not None else None
+    if mps is not None and callable(getattr(mps, "is_available", None)) and mps.is_available():
+        return "mps"
+
+    return "cpu"
+
+
+def _default_batch_size_for_device(device: str) -> int:
+    if device.startswith("cuda"):
+        return 16
+    if device.startswith(("xpu", "mps")):
+        return 8
+    return 4
+
+
+class YoloGpuPredictor:
+    """Lazy-loading YOLO11 + ByteTrack predictor with cross-platform GPU auto-detection (CUDA/XPU/MPS/CPU)."""
+
+    def __init__(
+        self,
+        det_weights: str = "yolo11m.pt",
+        pose_weights: str = "yolo11m-pose.pt",
+        batch_size: int | None = None,
+        prefer_engine: bool = True,
+        device: str | None = None,
+        models_dir: Path | None = None,
+    ) -> None:
         self._det_weights = det_weights
         self._pose_weights = pose_weights
+        self._explicit_batch_size = max(1, int(batch_size)) if batch_size is not None else None
+        self._prefer_engine = prefer_engine
+        self._models_dir = (models_dir or DEFAULT_CONFIG.models_dir).resolve()
         self._det_model = None
         self._pose_model = None
-        self._device: str | None = None
+        self._det_resolved: str | None = None
+        self._pose_resolved: str | None = None
+        self._device: str | None = device
 
     @property
     def device(self) -> str:
         if self._device is None:
-            import torch
-
-            self._device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            self._device = detect_inference_device()
         return self._device
+
+    @property
+    def _batch_size(self) -> int:
+        if self._explicit_batch_size is not None:
+            return self._explicit_batch_size
+        return _default_batch_size_for_device(self.device)
+
+    @property
+    def _is_cuda(self) -> bool:
+        return self.device.startswith("cuda")
+
+    def _resolve_weights(self, weights: str) -> str:
+        raw = Path(weights)
+        if raw.parent == Path(".") and not raw.is_absolute():
+            self._models_dir.mkdir(parents=True, exist_ok=True)
+            base = self._models_dir / raw.name
+        else:
+            base = raw
+
+        if not (self._prefer_engine and base.suffix == ".pt"):
+            return str(base)
+
+        if self._is_cuda and importlib.util.find_spec("tensorrt") is not None:
+            engine_path = base.with_suffix(".engine")
+            if engine_path.is_file():
+                return str(engine_path)
+        elif self.device == "mps":
+            coreml_path = base.with_suffix(".mlpackage")
+            if coreml_path.is_dir():
+                return str(coreml_path)
+        elif (self.device == "cpu" or self.device.startswith("xpu")) and importlib.util.find_spec("openvino") is not None:
+            ov_dir = base.with_name(f"{base.stem}_openvino_model")
+            if ov_dir.is_dir():
+                return str(ov_dir)
+        return str(base)
+
+    def _base_weights_path(self, weights: str) -> str:
+        raw = Path(weights)
+        if raw.parent == Path(".") and not raw.is_absolute():
+            self._models_dir.mkdir(parents=True, exist_ok=True)
+            return str(self._models_dir / raw.name)
+        return str(raw)
+
+    def _infer_kwargs(self, resolved_weights: str) -> dict[str, object]:
+        if self._is_cuda and resolved_weights.endswith(".pt"):
+            return {"quantize": "fp16"}
+        return {}
+
+    def _load_yolo_model(self, yolo_cls: Any, weights: str, task: str) -> tuple[object, str]:
+        resolved = self._resolve_weights(weights)
+        fallback = self._base_weights_path(weights)
+        try:
+            return yolo_cls(resolved, task=task), resolved
+        except Exception as exc:
+            if resolved != fallback:
+                logger.warning(
+                    "Failed to load compiled model %s (%s); falling back to %s",
+                    resolved,
+                    exc,
+                    fallback,
+                )
+                return yolo_cls(fallback, task=task), fallback
+            raise
 
     def _ensure_models(self) -> tuple[object, object]:
         if self._det_model is None or self._pose_model is None:
+            import torch
             from ultralytics import YOLO
 
-            logger.info("Loading YOLO11 models on device=%s", self.device)
-            self._det_model = YOLO(self._det_weights)
-            self._pose_model = YOLO(self._pose_weights)
+            if self._is_cuda:
+                torch.backends.cudnn.benchmark = True
+
+            self._det_model, self._det_resolved = self._load_yolo_model(YOLO, self._det_weights, "detect")
+            self._pose_model, self._pose_resolved = self._load_yolo_model(YOLO, self._pose_weights, "pose")
+            logger.info(
+                "Loaded YOLO11 models on device=%s (det=%s, pose=%s, batch=%d)",
+                self.device,
+                self._det_resolved,
+                self._pose_resolved,
+                self._batch_size,
+            )
         return self._det_model, self._pose_model
 
     def detect_balls(
@@ -79,53 +201,91 @@ class YoloGpuPredictor:
         if not frames:
             return []
         det_model, _ = self._ensure_models()
-        detections: list[BallDetection] = []
-        prev_gray: np.ndarray | None = None
+        infer_kw = self._infer_kwargs(self._det_resolved or self._det_weights)
+        n = len(frames)
+        # Per-frame raw candidates: (ox, oy, x1, y1, x2, y2, conf)
+        per_frame_raw: list[list[tuple[int, int, float, float, float, float, float]]] = [[] for _ in range(n)]
 
-        for frame_idx, ts, bgr in frames:
+        # 1) Batched full-frame pass at imgsz=1280
+        full_imgs = [item[2] for item in frames]
+        for start in range(0, n, self._batch_size):
+            batch_imgs = full_imgs[start : start + self._batch_size]
+            results = det_model.predict(
+                batch_imgs,
+                device=self.device,
+                classes=[32],  # COCO sports ball
+                imgsz=1280,
+                conf=0.16,
+                verbose=False,
+                **infer_kw,
+            )
+            for offset, r in enumerate(results):
+                if r.boxes is None or len(r.boxes) == 0:
+                    continue
+                xyxys = r.boxes.xyxy.tolist()
+                confs = r.boxes.conf.tolist()
+                bucket = per_frame_raw[start + offset]
+                for box, conf in zip(xyxys, confs, strict=True):
+                    bucket.append((0, 0, float(box[0]), float(box[1]), float(box[2]), float(box[3]), float(conf)))
+
+        # 2) Batched overlapping upper-court tiles at imgsz=960 for small high-arc balls
+        tile_meta: list[tuple[int, int, int]] = []
+        tile_imgs: list[np.ndarray] = []
+        for f_i, (_frame_idx, _ts, bgr) in enumerate(frames):
             h, w = bgr.shape[:2]
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            motion_map = cv2.absdiff(gray, prev_gray) if prev_gray is not None else None
-            prev_gray = gray
-
-            # Full-frame + overlapping upper-court tiles for small high-arc balls
             roi_h = max(64, int(0.76 * h))
             tile_w = int(0.62 * w)
-            crops: list[tuple[int, int, np.ndarray]] = [
-                (0, 0, bgr),
-                (0, 0, bgr[:roi_h, :tile_w]),
-                (w - tile_w, 0, bgr[:roi_h, w - tile_w :]),
-            ]
-            frame_cands: list[tuple[float, float, float]] = []
-            for ox, oy, crop in crops:
-                results = det_model.predict(
-                    crop,
-                    device=self.device,
-                    classes=[32],  # COCO sports ball
-                    imgsz=960 if ox > 0 or crop.shape[0] < h else 1280,
-                    conf=0.16,
-                    verbose=False,
-                )
-                for r in results:
-                    if r.boxes is None:
-                        continue
-                    for box in r.boxes:
-                        xyxy = box.xyxy[0].tolist()
-                        conf = float(box.conf[0].item())
-                        cx = ox + 0.5 * (xyxy[0] + xyxy[2])
-                        cy = oy + 0.5 * (xyxy[1] + xyxy[3])
-                        if motion_map is not None:
-                            x1 = max(0, int(ox + xyxy[0]))
-                            y1 = max(0, int(oy + xyxy[1]))
-                            x2 = min(w, int(ox + xyxy[2]))
-                            y2 = min(h, int(oy + xyxy[3]))
-                            if x2 > x1 and y2 > y1:
-                                m_score = float(np.mean(motion_map[y1:y2, x1:x2]))
-                                if m_score < 2.5:
-                                    conf *= 0.25
-                        frame_cands.append((cx, cy, conf))
+            tile_meta.append((f_i, 0, 0))
+            tile_imgs.append(bgr[:roi_h, :tile_w])
+            tile_meta.append((f_i, w - tile_w, 0))
+            tile_imgs.append(bgr[:roi_h, w - tile_w :])
 
-            # Simple spatial NMS merge within 18px
+        for start in range(0, len(tile_imgs), self._batch_size):
+            batch_imgs = tile_imgs[start : start + self._batch_size]
+            batch_meta = tile_meta[start : start + self._batch_size]
+            results = det_model.predict(
+                batch_imgs,
+                device=self.device,
+                classes=[32],  # COCO sports ball
+                imgsz=960,
+                conf=0.16,
+                verbose=False,
+                **infer_kw,
+            )
+            for (f_i, ox, oy), r in zip(batch_meta, results, strict=True):
+                if r.boxes is None or len(r.boxes) == 0:
+                    continue
+                xyxys = r.boxes.xyxy.tolist()
+                confs = r.boxes.conf.tolist()
+                bucket = per_frame_raw[f_i]
+                for box, conf in zip(xyxys, confs, strict=True):
+                    bucket.append((ox, oy, float(box[0]), float(box[1]), float(box[2]), float(box[3]), float(conf)))
+
+        # 3) Lazy crop-only motion damping + spatial NMS merge within 18px
+        detections: list[BallDetection] = []
+        for f_i, (frame_idx, ts, bgr) in enumerate(frames):
+            raw_cands = per_frame_raw[f_i]
+            if not raw_cands:
+                continue
+            h, w = bgr.shape[:2]
+            prev_bgr = frames[f_i - 1][2] if f_i > 0 else None
+            frame_cands: list[tuple[float, float, float]] = []
+            for ox, oy, bx1, by1, bx2, by2, conf in raw_cands:
+                cx = ox + 0.5 * (bx1 + bx2)
+                cy = oy + 0.5 * (by1 + by2)
+                if prev_bgr is not None:
+                    x1 = max(0, int(ox + bx1))
+                    y1 = max(0, int(oy + by1))
+                    x2 = min(w, int(ox + bx2))
+                    y2 = min(h, int(oy + by2))
+                    if x2 > x1 and y2 > y1:
+                        cur_patch = cv2.cvtColor(bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+                        prev_patch = cv2.cvtColor(prev_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+                        m_score = float(np.mean(cv2.absdiff(cur_patch, prev_patch)))
+                        if m_score < 2.5:
+                            conf *= 0.25
+                frame_cands.append((cx, cy, conf))
+
             frame_cands.sort(key=lambda c: -c[2])
             kept: list[tuple[float, float, float]] = []
             for cx, cy, conf in frame_cands:
@@ -148,22 +308,29 @@ class YoloGpuPredictor:
         if not frames:
             return []
         _, pose_model = self._ensure_models()
-        # Reset ByteTrack state between independent play windows
-        if getattr(pose_model, "predictor", None) is not None:
-            pose_model.predictor = None
+        infer_kw = self._infer_kwargs(self._pose_resolved or self._pose_weights)
+
+        # Reset ByteTrack state between independent play windows without tearing down the predictor
+        predictor = getattr(pose_model, "predictor", None)
+        if predictor is not None and hasattr(predictor, "trackers"):
+            for tr in predictor.trackers:
+                tr.reset()
 
         tracks_map: dict[int, list[PoseFrame]] = {}
-        for frame_idx, ts, bgr in frames:
+        for start in range(0, len(frames), self._batch_size):
+            batch = frames[start : start + self._batch_size]
+            imgs = [item[2] for item in batch]
             results = pose_model.track(
-                bgr,
+                imgs,
                 device=self.device,
                 persist=True,
                 tracker="bytetrack.yaml",
                 imgsz=1280,
                 conf=0.25,
                 verbose=False,
+                **infer_kw,
             )
-            for r in results:
+            for (frame_idx, ts, _bgr), r in zip(batch, results, strict=True):
                 if r.boxes is None or r.keypoints is None or r.boxes.id is None:
                     continue
                 ids = r.boxes.id.int().tolist()
@@ -195,12 +362,12 @@ class YoloGpuPredictor:
         if not frames:
             return [], []
         det_model, _ = self._ensure_models()
+        infer_kw = self._infer_kwargs(self._det_resolved or self._det_weights)
         balls: list[BallDetection] = []
         people: list[tuple[int, float, tuple[float, float, float, float]]] = []
 
-        batch_size = 8
-        for i in range(0, len(frames), batch_size):
-            batch = frames[i : i + batch_size]
+        for i in range(0, len(frames), self._batch_size):
+            batch = frames[i : i + self._batch_size]
             imgs = [item[2] for item in batch]
             results = det_model.predict(
                 imgs,
@@ -209,9 +376,10 @@ class YoloGpuPredictor:
                 imgsz=960,
                 conf=0.22,
                 verbose=False,
+                **infer_kw,
             )
             for (frame_idx, ts, _bgr), r in zip(batch, results, strict=True):
-                if r.boxes is None:
+                if r.boxes is None or len(r.boxes) == 0:
                     continue
                 cls_ids = r.boxes.cls.int().tolist()
                 xyxys = r.boxes.xyxy.tolist()
@@ -466,12 +634,24 @@ def analyse_play_window(
         zone_x = 0.5 * (calibration.left_point.x + calibration.right_point.x)
     attack_zone = classify_attack_zone(calibration, zone_x)
 
-    # Extract keyframe JPEG thumbnails
+    # Extract keyframe JPEG thumbnails directly from already-decoded frames (avoiding 3 video re-opens)
     thumbs_dir = session_dir / "thumbnails"
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
+    frames_by_idx = {idx: bgr for idx, _ts, bgr in frames}
     for km in keyframes:
         fname = f"{play_id}_{km.name}.jpg"
+        out_path = thumbs_dir / fname
         try:
-            extract_keyframe_jpeg(video_path, km.frame_idx, thumbs_dir / fname)
+            chosen = frames_by_idx.get(km.frame_idx)
+            if chosen is not None:
+                h, w = chosen.shape[:2]
+                if w > 360:
+                    new_h = max(2, int(round(h * (360.0 / float(w)))))
+                    chosen = cv2.resize(chosen, (360, new_h), interpolation=cv2.INTER_AREA)
+                if not cv2.imwrite(str(out_path), chosen, [cv2.IMWRITE_JPEG_QUALITY, 86]):
+                    raise IOError(f"Failed to write thumbnail JPEG: {out_path}")
+            else:
+                extract_keyframe_jpeg(video_path, km.frame_idx, out_path)
             km.thumbnail_rel_path = fname
         except Exception as exc:  # pragma: no cover - defensive fallback
             logger.warning("Thumbnail extraction failed for %s frame %d: %s", play_id, km.frame_idx, exc)
