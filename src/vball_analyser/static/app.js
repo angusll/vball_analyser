@@ -145,6 +145,132 @@ function currentFrameIdx() {
   return Math.max(0, Math.round(els.video.currentTime * fps));
 }
 
+function getPlayMechanicsRows(play) {
+  if (!play) return [];
+  const hm = play.hitter_metrics;
+  const traj = play.set_trajectory;
+  const blk = play.block_summary;
+  const setPeakVal = traj
+    ? (traj.peak_height_cm !== null
+        ? `${traj.peak_height_cm >= 0 ? "+" : ""}${traj.peak_height_cm.toFixed(0)} cm`
+        : `${traj.peak_height_px >= 0 ? "+" : ""}${traj.peak_height_px.toFixed(0)} px`)
+    : "N/A";
+  const contactHtVal = hm && hm.contact_height_px !== null
+    ? (hm.contact_height_cm !== null
+        ? `${hm.contact_height_cm >= 0 ? "+" : ""}${hm.contact_height_cm.toFixed(0)} cm (${hm.contact_height_px >= 0 ? "+" : ""}${hm.contact_height_px.toFixed(0)}px)`
+        : `${hm.contact_height_px >= 0 ? "+" : ""}${hm.contact_height_px.toFixed(0)} px`)
+    : "N/A";
+  const blockVal = blk.seam_open
+    ? (blk.seam_gap_cm !== null ? `Open (${blk.seam_gap_cm.toFixed(0)} cm)` : "Open")
+    : (blk.blockers.length >= 2 ? "Closed" : (blk.blockers.length === 1 ? "Single Block" : "No Block"));
+
+  return [
+    {
+      label: "Attack Zone",
+      value: play.attack_zone,
+      desc: "Net section where the hit occurs (Zone 4 Left, Zone 3 Middle, Zone 2 Right).",
+      color: "#38bdf8",
+    },
+    {
+      label: "Set Tempo",
+      value: traj ? `${traj.tempo_s.toFixed(2)} s` : "N/A",
+      desc: "Flight time from setter release to hitter ball contact.",
+      color: "#38bdf8",
+    },
+    {
+      label: "Set Peak",
+      value: setPeakVal,
+      desc: "Highest point of the set arc measured vertically above the net top tape.",
+      color: "#38bdf8",
+    },
+    {
+      label: "Contact Height",
+      value: contactHtVal,
+      desc: "Ball height above the net top tape at contact (set 2-click net endpoints for cm).",
+      color: "#facc15",
+    },
+    {
+      label: "Arm Extension (2D)",
+      value: hm && hm.arm_extension_deg !== null ? `${hm.arm_extension_deg.toFixed(0)}°` : "N/A",
+      desc: "Shoulder-elbow-wrist angle at contact in the camera plane (closer to 180° = fuller reach).",
+      color: "#4ade80",
+    },
+    {
+      label: "Torso Tilt (2D)",
+      value: hm && hm.torso_tilt_deg !== null ? `${hm.torso_tilt_deg.toFixed(0)}°` : "N/A",
+      desc: "Upper-body lean/arch from vertical at contact in the camera plane.",
+      color: "#4ade80",
+    },
+    {
+      label: "Jump Timing",
+      value: hm ? hm.jump_timing_label : "N/A",
+      desc: "Whether ball contact happens at peak jump height or before/after the apex.",
+      color: "#4ade80",
+    },
+    {
+      label: "Block Seam",
+      value: blockVal,
+      desc: "Spacing between opposing blockers' hands above the net at contact.",
+      color: "#fb7185",
+    },
+  ];
+}
+
+function drawTopLeftMechanicsHud(ctx, play) {
+  const rows = getPlayMechanicsRows(play);
+  if (!rows.length) return;
+  const r = getVideoDisplayRect();
+  const x = Math.max(10, Math.round(r.ox) + 12);
+  const y = Math.max(10, Math.round(r.oy) + 12);
+  const padX = 11;
+  const padY = 9;
+  const lineH = 18;
+  const headerH = 20;
+
+  ctx.font = "600 11px system-ui, sans-serif";
+  let maxLabelW = 0;
+  let maxValW = 0;
+  for (const row of rows) {
+    maxLabelW = Math.max(maxLabelW, ctx.measureText(row.label).width);
+    maxValW = Math.max(maxValW, ctx.measureText(row.value).width);
+  }
+  const boxW = Math.min(els.canvas.clientWidth - x - 10, Math.max(228, Math.ceil(maxLabelW + maxValW + padX * 2 + 20)));
+  const boxH = padY * 2 + headerH + rows.length * lineH;
+
+  ctx.fillStyle = "rgba(15, 23, 42, 0.84)";
+  ctx.strokeStyle = "rgba(56, 189, 248, 0.55)";
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  ctx.roundRect(x, y, boxW, boxH, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = "700 11px system-ui, sans-serif";
+  ctx.fillStyle = "#38bdf8";
+  ctx.fillText(`PLAY #${play.index} MECHANICS`, x + padX, y + padY + 11);
+
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.25)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x + padX, y + padY + headerH - 3);
+  ctx.lineTo(x + boxW - padX, y + padY + headerH - 3);
+  ctx.stroke();
+
+  rows.forEach((row, idx) => {
+    const ry = y + padY + headerH + 12 + idx * lineH;
+    ctx.font = "500 11px system-ui, sans-serif";
+    ctx.fillStyle = "#cbd5e1";
+    ctx.textAlign = "left";
+    ctx.fillText(row.label, x + padX, ry);
+
+    ctx.font = "700 11px system-ui, sans-serif";
+    ctx.fillStyle = row.color;
+    ctx.textAlign = "right";
+    ctx.fillText(row.value, x + boxW - padX, ry);
+  });
+  ctx.textAlign = "left";
+}
+
 function drawBadge(ctx, text, x, y, borderCol) {
   ctx.font = "600 12px system-ui, sans-serif";
   const padX = 7;
@@ -338,6 +464,9 @@ function renderOverlay() {
       drawBadge(ctx, "Block Seam Open", p1.x, p1.y - 8, "#fb7185");
     }
   }
+
+  // 5. Always-visible Play Mechanics HUD on top-left
+  drawTopLeftMechanicsHud(ctx, play);
 }
 
 function jumpToFrame(frameIdx) {
@@ -389,44 +518,28 @@ function renderKeyframes(play) {
 
 function renderMetrics(play) {
   els.metricsList.replaceChildren();
-  const rows = [];
-  if (!play) {
-    rows.push(["Status", "Select a play"]);
-  } else {
-    rows.push(["Attack Zone", play.attack_zone]);
-    rows.push(["Set Tempo", play.set_trajectory ? `${play.set_trajectory.tempo_s.toFixed(2)} s` : "N/A"]);
-    rows.push([
-      "Set Peak",
-      play.set_trajectory
-        ? (play.set_trajectory.peak_height_cm !== null
-            ? `+${play.set_trajectory.peak_height_cm.toFixed(0)} cm`
-            : `${play.set_trajectory.peak_height_px.toFixed(0)} px`)
-        : "N/A",
-    ]);
-    const hm = play.hitter_metrics;
-    rows.push([
-      "Contact Height",
-      hm && hm.contact_height_px !== null
-        ? (hm.contact_height_cm !== null ? `${hm.contact_height_cm.toFixed(0)} cm (${hm.contact_height_px.toFixed(0)}px)` : `${hm.contact_height_px.toFixed(0)} px`)
-        : "N/A",
-    ]);
-    rows.push(["Arm Extension (2D)", hm && hm.arm_extension_deg !== null ? `${hm.arm_extension_deg.toFixed(0)}°` : "N/A"]);
-    rows.push(["Torso Tilt (2D)", hm && hm.torso_tilt_deg !== null ? `${hm.torso_tilt_deg.toFixed(0)}°` : "N/A"]);
-    rows.push(["Jump Timing", hm ? hm.jump_timing_label : "N/A"]);
-    rows.push([
-      "Block Seam",
-      play.block_summary.seam_open
-        ? (play.block_summary.seam_gap_cm !== null ? `Open (${play.block_summary.seam_gap_cm.toFixed(0)} cm)` : "Open")
-        : (play.block_summary.blockers.length ? "Closed" : "Single / None"),
-    ]);
-  }
-  for (const [label, val] of rows) {
+  const rows = getPlayMechanicsRows(play);
+  if (!rows.length) {
     const dt = document.createElement("dt");
-    dt.textContent = label;
+    dt.textContent = "Status";
     const dd = document.createElement("dd");
-    dd.textContent = val;
+    dd.textContent = "Select a play";
     els.metricsList.appendChild(dt);
     els.metricsList.appendChild(dd);
+    return;
+  }
+
+  for (const row of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = row.label;
+    const dd = document.createElement("dd");
+    dd.textContent = row.value;
+    const desc = document.createElement("div");
+    desc.className = "metric-desc";
+    desc.textContent = row.desc;
+    els.metricsList.appendChild(dt);
+    els.metricsList.appendChild(dd);
+    els.metricsList.appendChild(desc);
   }
 }
 

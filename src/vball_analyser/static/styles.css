@@ -263,9 +263,20 @@ body {
 .play-delete:hover { color: var(--rose); }
 
 .metrics-panel { background: var(--bg-0); border: 1px solid var(--border); border-radius: 8px; padding: 0.65rem; }
-.metrics-grid { display: grid; grid-template-columns: 1fr auto; gap: 0.35rem 0.5rem; font-size: 0.78rem; }
-.metrics-grid dt { color: var(--text-2); }
-.metrics-grid dd { font-weight: 600; text-align: right; color: var(--text-1); }
+.metrics-grid { display: grid; grid-template-columns: 1fr auto; gap: 0.2rem 0.5rem; font-size: 0.78rem; }
+.metrics-grid dt { color: var(--text-1); font-weight: 600; margin-top: 0.35rem; }
+.metrics-grid dt:first-child { margin-top: 0; }
+.metrics-grid dd { font-weight: 700; text-align: right; color: var(--cyan); margin-top: 0.35rem; }
+.metrics-grid dd:nth-of-type(1) { margin-top: 0; }
+.metric-desc {
+  grid-column: 1 / -1;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--text-2);
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+}
+.metric-desc:last-child { border-bottom: none; padding-bottom: 0; }
 
 .export-panel { margin-top: auto; background: var(--bg-0); border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem; }
 .checkbox-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-2); cursor: pointer; }

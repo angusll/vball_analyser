@@ -31,6 +31,71 @@ COCO_EDGES: tuple[tuple[int, int], ...] = (
 )
 
 
+def _draw_top_left_hud(img: np.ndarray, play: PlayAnalysis) -> None:
+    """Render an always-visible translucent Play Mechanics HUD on the top-left corner."""
+    traj = play.set_trajectory
+    hm = play.hitter_metrics
+    blk = play.block_summary
+
+    set_peak = (
+        f"{traj.peak_height_cm:+.0f}cm"
+        if (traj is not None and traj.peak_height_cm is not None)
+        else (f"{traj.peak_height_px:+.0f}px" if traj is not None else "N/A")
+    )
+    contact_ht = (
+        f"{hm.contact_height_cm:+.0f}cm"
+        if (hm is not None and hm.contact_height_cm is not None)
+        else (f"{hm.contact_height_px:+.0f}px" if (hm is not None and hm.contact_height_px is not None) else "N/A")
+    )
+    block_val = (
+        f"Open ({blk.seam_gap_cm:.0f}cm)"
+        if (blk.seam_open and blk.seam_gap_cm is not None)
+        else (
+            "Open"
+            if blk.seam_open
+            else ("Closed" if len(blk.blockers) >= 2 else ("Single Block" if len(blk.blockers) == 1 else "No Block"))
+        )
+    )
+
+    rows: list[tuple[str, str, tuple[int, int, int]]] = [
+        ("Attack Zone", play.attack_zone, (248, 189, 56)),
+        ("Set Tempo", f"{traj.tempo_s:.2f}s" if traj is not None else "N/A", (248, 189, 56)),
+        ("Set Peak", set_peak, (248, 189, 56)),
+        ("Contact Ht", contact_ht, (21, 204, 250)),
+        ("Arm Ext (2D)", f"{hm.arm_extension_deg:.0f} deg" if (hm and hm.arm_extension_deg is not None) else "N/A", (128, 222, 74)),
+        ("Torso Tilt", f"{hm.torso_tilt_deg:.0f} deg" if (hm and hm.torso_tilt_deg is not None) else "N/A", (128, 222, 74)),
+        ("Jump Timing", hm.jump_timing_label if hm is not None else "N/A", (128, 222, 74)),
+        ("Block Seam", block_val, (133, 113, 251)),
+    ]
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.44
+    line_h = 20
+    pad = 10
+    header_h = 22
+    box_w = 278
+    box_h = pad * 2 + header_h + len(rows) * line_h
+    x0, y0 = 12, 12
+    x1 = min(img.shape[1] - 8, x0 + box_w)
+    y1 = min(img.shape[0] - 8, y0 + box_h)
+    if x1 <= x0 + 40 or y1 <= y0 + 40:
+        return
+
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x0, y0), (x1, y1), (15, 23, 42), -1)
+    cv2.addWeighted(overlay, 0.82, img, 0.18, 0.0, img)
+    cv2.rectangle(img, (x0, y0), (x1, y1), (248, 189, 56), 1, cv2.LINE_AA)
+
+    cv2.putText(img, f"PLAY #{play.index} MECHANICS", (x0 + pad, y0 + pad + 11), font, 0.46, (248, 189, 56), 1, cv2.LINE_AA)
+    cv2.line(img, (x0 + pad, y0 + pad + header_h - 3), (x1 - pad, y0 + pad + header_h - 3), (71, 85, 105), 1)
+
+    for idx, (label, val, col_bgr) in enumerate(rows):
+        ry = y0 + pad + header_h + 13 + idx * line_h
+        cv2.putText(img, label, (x0 + pad, ry), font, scale, (203, 213, 225), 1, cv2.LINE_AA)
+        (vw, _vh), _ = cv2.getTextSize(val, font, scale, 1)
+        cv2.putText(img, val, (max(x0 + pad + 90, x1 - pad - vw), ry), font, scale, col_bgr, 1, cv2.LINE_AA)
+
+
 def _draw_badge(
     img: np.ndarray,
     text: str,
@@ -168,6 +233,8 @@ def draw_play_overlays(
             cv2.line(canvas, (sx1, sy), (sx2, sy), (133, 113, 251), 3, cv2.LINE_AA)
             _draw_badge(canvas, "Open Block Seam", (sx1, sy - 14), (133, 113, 251))
 
+    # 5. Always-visible Play Mechanics HUD on top-left
+    _draw_top_left_hud(canvas, play)
     return canvas
 
 
