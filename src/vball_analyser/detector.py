@@ -6,6 +6,7 @@ import importlib.util
 import logging
 import math
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Protocol
@@ -313,6 +314,36 @@ class YoloGpuPredictor:
                 self._batch_size,
             )
         return self._det_model, self._pose_model
+
+    def warmup(self) -> None:
+        """Preload detector & pose models and run a dummy forward pass to initialize GPU/TensorRT."""
+        t0 = time.perf_counter()
+        det_model, pose_model = self._ensure_models()
+        dummy = np.zeros((576, 1024, 3), dtype=np.uint8)
+        det_kw = self._infer_kwargs(self._det_resolved or self._det_weights)
+        pose_kw = self._infer_kwargs(self._pose_resolved or self._pose_weights)
+        det_model.predict(
+            [dummy],
+            device=self.device,
+            classes=[32],
+            imgsz=1280,
+            conf=0.16,
+            verbose=False,
+            **det_kw,
+        )
+        pose_model.predict(
+            [dummy],
+            device=self.device,
+            imgsz=1280,
+            conf=0.25,
+            verbose=False,
+            **pose_kw,
+        )
+        logger.info(
+            "Warmed up YOLO11 models on device=%s in %.2fs",
+            self.device,
+            time.perf_counter() - t0,
+        )
 
     def detect_balls(
         self, frames: list[tuple[int, float, np.ndarray]], calibration: NetCalibration

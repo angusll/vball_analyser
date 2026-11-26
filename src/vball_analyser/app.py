@@ -144,6 +144,7 @@ def _set_session_cookie(response: Response, cookie_val: str, ttl_seconds: int) -
 def create_app(
     config: AppConfig = DEFAULT_CONFIG,
     predictor: FramePredictor | None = None,
+    warmup_on_startup: bool | None = None,
 ) -> FastAPI:
     """Create configured FastAPI app with security middleware and GPU worker state."""
     secret_key = resolve_secret_key(config.secret_file)
@@ -159,9 +160,26 @@ def create_app(
     )
     active_tasks: set[asyncio.Task[None]] = set()
     gpu_lock = asyncio.Lock()
+    should_warmup = warmup_on_startup if warmup_on_startup is not None else (predictor is None)
+
+    async def _run_startup_warmup() -> None:
+        warmup_fn = getattr(active_predictor, "warmup", None)
+        if not callable(warmup_fn):
+            return
+        try:
+            async with gpu_lock:
+                await asyncio.to_thread(warmup_fn)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Startup model warmup failed; models will load on first analysis.", exc_info=True)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if should_warmup:
+            task = asyncio.create_task(_run_startup_warmup())
+            active_tasks.add(task)
+            task.add_done_callback(active_tasks.discard)
         yield
         for task in list(active_tasks):
             task.cancel()

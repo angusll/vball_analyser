@@ -306,3 +306,45 @@ def test_yolo_predictor_skips_vfr_duplicates_and_conditional_tiling() -> None:
     assert fake_pose.calls == [3]
     assert len(tracks) == 1
     assert [pf.frame_idx for pf in tracks[0].frames] == [0, 1, 2, 3, 4, 5]
+
+
+def test_yolo_predictor_warmup_and_app_startup_preload(tmp_path: Path) -> None:
+    import threading
+    from fastapi.testclient import TestClient
+    from vball_analyser.app import create_app
+    from vball_analyser.config import AppConfig
+
+    # 1. YoloGpuPredictor.warmup() runs a dummy pass on both det and pose models
+    calls: list[tuple[str, dict]] = []
+
+    class _FakeModel:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def predict(self, imgs, **kwargs):
+            calls.append((self.name, kwargs))
+            return []
+
+    pred = YoloGpuPredictor(device="cpu", models_dir=tmp_path)
+    pred._det_model = _FakeModel("det")
+    pred._pose_model = _FakeModel("pose")
+    pred._det_resolved = "yolo11m.pt"
+    pred._pose_resolved = "yolo11m-pose.pt"
+    pred.warmup()
+    assert [name for name, _ in calls] == ["det", "pose"]
+    assert calls[0][1]["imgsz"] == 1280
+    assert calls[1][1]["imgsz"] == 1280
+
+    # 2. FastAPI lifespan triggers predictor.warmup() automatically in background
+    warmed = threading.Event()
+
+    class _WarmupPredictor(SyntheticColorPredictor):
+        def warmup(self) -> None:
+            warmed.set()
+
+    cfg = AppConfig(data_dir=tmp_path / "data")
+    app = create_app(config=cfg, predictor=_WarmupPredictor(), warmup_on_startup=True)
+    with TestClient(app) as client:
+        assert warmed.wait(timeout=3.0)
+        resp = client.get("/api/csrf")
+        assert resp.status_code == 200
