@@ -39,5 +39,9 @@ class AppConfig:
     def sessions_dir(self) -> Path:
         return self.data_dir / "sessions"
 
+    @property
+    def serve_sessions_dir(self) -> Path:
+        return self.data_dir / "serve_sessions"
+
 
 DEFAULT_CONFIG = AppConfig()
