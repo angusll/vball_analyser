@@ -134,12 +134,23 @@ class ServeSessionStore:
                     deduped.append(label)
             session.servers = deduped
         if default_passers is not None:
-            # Updating default_passers applies to future manual serves only;
-            # historical serves keep their own passers_snapshot.
-            session.default_passers = [
+            new_passers = [
                 PasserPosition(label=p.label.strip()[:24], x_m=round(p.x_m, 3), y_m=round(p.y_m, 3))
                 for p in default_passers
             ]
+            session.default_passers = new_passers
+            for s in session.serves:
+                s.passers_snapshot = [p.model_copy() for p in new_passers]
+                nx, ny, norm_res, zone, depth, is_seam, seam_pair = classify_serve(
+                    s.x_m, s.y_m, s.result, s.passers_snapshot
+                )
+                s.x_m = nx
+                s.y_m = ny
+                s.result = norm_res
+                s.zone = zone
+                s.depth = depth
+                s.is_seam = is_seam
+                s.seam_pair = seam_pair
         self.save_session(session)
         return session
 

@@ -50,6 +50,7 @@
     showDots: true,
     showHeatmap: false,
     showSeams: true,
+    hideVideoCard: false,
     calibrating: false,
     calMode: "net", // "net" (2 clicks) | "four_corner" (4 clicks)
     calPoints: [],
@@ -65,6 +66,7 @@
     loadVideoBtn: document.getElementById("serveLoadVideoBtn"),
     calibrateNetBtn: document.getElementById("calibrateNetCourtBtn"),
     calibrateBtn: document.getElementById("calibrateCourtBtn"),
+    toggleVideoCardBtn: document.getElementById("toggleVideoCardBtn"),
     autoDetectBtn: document.getElementById("autoDetectServesBtn"),
     statusBadge: document.getElementById("serveStatusBadge"),
     statusText: document.getElementById("serveStatusText"),
@@ -681,7 +683,12 @@
 
     // Linked video preview
     const hasVideo = Boolean(sess.video_session_id);
-    sEls.videoCard.classList.toggle("hidden", !hasVideo);
+    if (sEls.toggleVideoCardBtn) {
+      sEls.toggleVideoCardBtn.classList.toggle("hidden", !hasVideo);
+      sEls.toggleVideoCardBtn.textContent = sState.hideVideoCard ? "Show Net Calibration" : "Hide Net Calibration";
+      sEls.toggleVideoCardBtn.setAttribute("aria-pressed", String(sState.hideVideoCard));
+    }
+    sEls.videoCard.classList.toggle("hidden", !hasVideo || sState.hideVideoCard);
     if (sEls.calibrateNetBtn) sEls.calibrateNetBtn.disabled = !hasVideo;
     sEls.calibrateBtn.disabled = !hasVideo;
     const isCal = Boolean(sess.court_calibration && sess.court_calibration.is_calibrated);
@@ -827,14 +834,37 @@
     if (sEls.calibrateNetBtn) {
       sEls.calibrateNetBtn.addEventListener("click", () => {
         if (!sState.session || !sState.session.video_session_id) return;
+        sState.hideVideoCard = false;
+        sEls.videoCard.classList.remove("hidden");
+        if (sEls.toggleVideoCardBtn) {
+          sEls.toggleVideoCardBtn.textContent = "Hide Net Calibration";
+          sEls.toggleVideoCardBtn.setAttribute("aria-pressed", "false");
+        }
         setCalibrationMode(true, "net");
       });
     }
 
     sEls.calibrateBtn.addEventListener("click", () => {
       if (!sState.session || !sState.session.video_session_id) return;
+      sState.hideVideoCard = false;
+      sEls.videoCard.classList.remove("hidden");
+      if (sEls.toggleVideoCardBtn) {
+        sEls.toggleVideoCardBtn.textContent = "Hide Net Calibration";
+        sEls.toggleVideoCardBtn.setAttribute("aria-pressed", "false");
+      }
       setCalibrationMode(true, "four_corner");
     });
+
+    if (sEls.toggleVideoCardBtn) {
+      sEls.toggleVideoCardBtn.addEventListener("click", () => {
+        sState.hideVideoCard = !sState.hideVideoCard;
+        sEls.videoCard.classList.toggle("hidden", sState.hideVideoCard);
+        sEls.toggleVideoCardBtn.textContent = sState.hideVideoCard ? "Show Net Calibration" : "Hide Net Calibration";
+        sEls.toggleVideoCardBtn.setAttribute("aria-pressed", String(sState.hideVideoCard));
+        renderCourt();
+        renderVideoOverlay();
+      });
+    }
 
     sEls.cancelCalBtn.addEventListener("click", () => setCalibrationMode(false));
 

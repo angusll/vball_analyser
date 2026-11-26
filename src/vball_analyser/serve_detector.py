@@ -368,5 +368,9 @@ def detect_serve_events(
                 )
             )
             last_event_t = land_ball.timestamp_s
+            # Once the first serve and receive are detected in this rally/window, stop scanning
+            # so ongoing rally touches (passes, sets, digs, free balls) are not logged as serves.
+            if receiver is not None:
+                break
 
     return events

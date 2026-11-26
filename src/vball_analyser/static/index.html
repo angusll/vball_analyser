@@ -10,25 +10,27 @@
   <a href="#stageMain" class="skip-link">Skip to review stage</a>
 
   <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="9"/>
-          <path d="M4.6 7.5c4.2 1.1 7.3 4.2 8.4 8.4"/>
-          <path d="M19.4 16.5c-4.2-1.1-7.3-4.2-8.4-8.4"/>
-          <path d="M7.5 19.4c1.6-3.7 5.2-6.2 9.4-6.4"/>
-        </svg>
-      </span>
-      <div class="brand-copy">
-        <h1>VBall Analyser</h1>
-        <span class="brand-sub">Baseline Studio &amp; Serve Recorder</span>
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M4.6 7.5c4.2 1.1 7.3 4.2 8.4 8.4"/>
+            <path d="M19.4 16.5c-4.2-1.1-7.3-4.2-8.4-8.4"/>
+            <path d="M7.5 19.4c1.6-3.7 5.2-6.2 9.4-6.4"/>
+          </svg>
+        </span>
+        <div class="brand-copy">
+          <h1>VBall Analyser</h1>
+          <span class="brand-sub">Baseline Studio &amp; Serve Recorder</span>
+        </div>
       </div>
-    </div>
 
-    <nav class="tab-switcher" role="tablist" aria-label="Workspace tabs">
-      <button id="tabStudioBtn" class="tab-btn active" type="button" role="tab" data-tab="studio" aria-selected="true">Set &amp; Hit Studio</button>
-      <button id="tabServeBtn" class="tab-btn" type="button" role="tab" data-tab="serve" aria-selected="false">Serve Distribution</button>
-    </nav>
+      <nav class="tab-switcher" role="tablist" aria-label="Workspace tabs">
+        <button id="tabStudioBtn" class="tab-btn active" type="button" role="tab" data-tab="studio" aria-selected="true">Set &amp; Hit Studio</button>
+        <button id="tabServeBtn" class="tab-btn" type="button" role="tab" data-tab="serve" aria-selected="false">Serve Distribution</button>
+      </nav>
+    </div>
 
     <div class="toolbar-actions" data-studio-only>
       <button id="openLoadBtn" class="btn btn-primary" type="button">
@@ -283,6 +285,7 @@
         <div class="serve-toolbar-group">
           <button id="calibrateNetCourtBtn" class="btn btn-secondary btn-small" type="button" title="Click left &amp; right net antenna tops, then any point on a near-court sideline">Calibrate via Net (3 Clicks)</button>
           <button id="calibrateCourtBtn" class="btn btn-ghost btn-small" type="button" title="Advanced: click 4 corners of the front 3m floor rectangle">4-Corner Floor</button>
+          <button id="toggleVideoCardBtn" class="btn btn-ghost btn-small hidden" type="button" aria-pressed="false">Hide Net Calibration</button>
           <button id="autoDetectServesBtn" class="btn btn-primary btn-small" type="button">Auto-Detect Serves</button>
           <div id="serveStatusBadge" class="status-pill status-idle" aria-live="polite">
             <span class="status-dot" aria-hidden="true"></span>

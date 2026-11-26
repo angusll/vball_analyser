@@ -292,3 +292,39 @@ def test_long_clip_coarse_scan_handles_missed_frame(tmp_path: Path) -> None:
     events = detect_serve_events(video_path, cal, FakeServePredictor(balls, []), meta)
     assert len(events) == 1
     assert events[0].zone == "Zone 1"
+
+
+def test_stops_detection_after_first_serve_and_receive_during_ongoing_rally(tmp_path: Path) -> None:
+    video_path = tmp_path / "long_rally.mp4"
+    fps = 15.0
+    duration_s = 9.0
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+    p2_px = project_court_to_image(H_inv, 4.5, 6.2)
+
+    n_frames = int(fps * duration_s)
+    p2_frames = [_make_pose_frame(i, round(i / fps, 4), p2_px[0], p2_px[1]) for i in range(n_frames)]
+    balls: list[BallDetection] = []
+
+    # First serve & receive at t=1.6s (frame 24)
+    for i in range(10, 25):
+        u = (i - 10) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=150.0 + u * (310.0 - 150.0), conf=0.9))
+    for i in range(25, 33):
+        u = (i - 24) / 8.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=310.0 - u * 140.0, conf=0.9))
+
+    # Ongoing rally free-ball / dig 4s later at t=5.6s (frame 84) -> must NOT be logged as a 2nd serve
+    for i in range(70, 85):
+        u = (i - 70) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=150.0 + u * (320.0 - 150.0), conf=0.9))
+    for i in range(85, 92):
+        u = (i - 84) / 7.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=320.0 - u * 120.0, conf=0.9))
+
+    tracks = [PlayerTrack(track_id=2, court_side="attacking", frames=p2_frames)]
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=n_frames, duration_s=duration_s, codec="h264")
+    events = detect_serve_events(video_path, cal, FakeServePredictor(balls, tracks), meta)
+    assert len(events) == 1
+    assert events[0].timestamp_s is not None and abs(events[0].timestamp_s - 1.6) < 0.25

@@ -1578,6 +1578,13 @@ body {
    Tab Switcher & Serve Distribution Recorder
    ========================================================================== */
 
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
 .tab-switcher {
   display: inline-flex;
   align-items: center;

@@ -19,25 +19,23 @@ def test_serve_store_crud_and_snapshot_isolation(tmp_path: Path) -> None:
     sess = store.add_serve(sess.serve_session_id, x_m=3.15, y_m=6.3, result="in", server_name="#7")
     assert len(sess.serves) == 1
     assert sess.serves[0].is_seam is True
-    orig_snapshot = list(sess.serves[0].passers_snapshot)
 
-    # Updating default_passers must NOT overwrite past serve snapshots (Review Focus #4)
-    new_formation = [
-        PasserPosition(label="P1", x_m=2.5, y_m=6.3),
+    # Dragging default_passers directly onto the serve auto-recomputes seam status for the summary
+    on_serve_formation = [
+        PasserPosition(label="P1", x_m=3.15, y_m=6.3),
         PasserPosition(label="P2", x_m=6.5, y_m=6.3),
     ]
-    sess = store.update_session(sess.serve_session_id, default_passers=new_formation)
+    sess = store.update_session(sess.serve_session_id, default_passers=on_serve_formation)
     assert len(sess.default_passers) == 2
-    assert sess.serves[0].passers_snapshot == orig_snapshot
-    assert sess.serves[0].is_seam is True
-
-    # Editing a specific serve's passers_snapshot recomputes its seam
-    shifted = [
-        PasserPosition(label="P1", x_m=3.15, y_m=6.3),
-        PasserPosition(label="P2", x_m=7.0, y_m=6.3),
-    ]
-    sess = store.update_serve(sess.serve_session_id, sess.serves[0].serve_id, passers_snapshot=shifted)
     assert sess.serves[0].is_seam is False
+
+    # Editing a specific serve's passers_snapshot back to straddling recomputes its seam to True
+    straddling = [
+        PasserPosition(label="P1", x_m=1.8, y_m=6.3),
+        PasserPosition(label="P2", x_m=4.8, y_m=6.3),
+    ]
+    sess = store.update_serve(sess.serve_session_id, sess.serves[0].serve_id, passers_snapshot=straddling)
+    assert sess.serves[0].is_seam is True
 
     # Valid calibration saves; degenerate calibration fails fast
     cal = CourtCalibration(
