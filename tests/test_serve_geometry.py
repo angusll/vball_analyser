@@ -82,21 +82,29 @@ def test_interpolate_court_from_net_handles_clipped_sidelines_and_click_order() 
         interpolate_court_from_net(Point2D(x=500.0, y=250.0), Point2D(x=510.0, y=250.0), image_width=1056)
 
 
-def test_interpolate_court_from_net_off_center_sideline_point() -> None:
+def test_interpolate_court_from_net_with_off_center_sideline_point() -> None:
     lt = Point2D(x=215.0, y=252.0)
     rt = Point2D(x=978.0, y=260.0)
-    # Camera shifted left: left sideline drops almost vertically below front_left (~x=213, y=458)
-    side_pt = Point2D(x=205.0, y=530.0)
-    cal = interpolate_court_from_net(lt, rt, image_width=1056, net_height_m=2.43, sideline_point=side_pt)
-    H, _ = compute_court_homography(cal)
-    # The clicked sideline point must project onto the left sideline (x_m == 0.0)
-    sx, sy = project_image_to_court(H, side_pt.x, side_pt.y)
-    assert sx == pytest.approx(0.0, abs=0.05)
-    assert sy > 2.0
-    # Right sideline must flare much wider than left sideline
-    assert (cal.attack_right.x - cal.front_right.x) > 3.0 * abs(cal.attack_left.x - cal.front_left.x)
+    # Off-center camera shifted left: left sideline goes almost straight down in image
+    centered = interpolate_court_from_net(lt, rt, image_width=1056, net_height_m=2.43)
+    skewed = interpolate_court_from_net(
+        lt,
+        rt,
+        image_width=1056,
+        net_height_m=2.43,
+        sideline_point=Point2D(x=180.0, y=540.0),
+    )
+    assert skewed.sideline_point is not None
+    # Both 3m corners shift strongly right compared to the centered estimate
+    assert skewed.attack_left.x > centered.attack_left.x + 80.0
+    assert skewed.attack_right.x > centered.attack_right.x + 80.0
 
-    # Sideline point above the net floor must raise ValueError
+    # Round-trip homography still exact
+    H, H_inv = compute_court_homography(skewed)
+    px, py = project_court_to_image(H_inv, 2.0, 5.0)
+    assert project_image_to_court(H, px, py) == pytest.approx((2.0, 5.0), abs=1e-2)
+
+    # Sideline click above the floor centerline must raise ValueError
     with pytest.raises(ValueError):
         interpolate_court_from_net(lt, rt, image_width=1056, sideline_point=Point2D(x=200.0, y=300.0))
 

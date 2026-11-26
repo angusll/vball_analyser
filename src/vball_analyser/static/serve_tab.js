@@ -35,7 +35,7 @@
   const NET_CAL_LABELS = [
     "1/3: Click Left Antenna Top-Tape Corner",
     "2/3: Click Right Antenna Top-Tape Corner",
-    "3/3: Click Any Point Along Left or Right Sideline (Sets Camera Angle)",
+    "3/3: Click Any Point on Left or Right Sideline (Near Court)",
   ];
 
   const sState = {

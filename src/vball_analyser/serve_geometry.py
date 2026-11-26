@@ -110,7 +110,7 @@ def interpolate_court_from_net(
     sideline_point: Point2D | None = None,
 ) -> CourtCalibration:
     """Interpolate the full 9m x 9m receiving court homography from the 2 net antenna top-tape points
-    plus an optional 3rd point on either visible sideline to solve off-center camera angles.
+    and an optional 3rd point on either near-court sideline for off-center camera angles.
 
     Works even when the baseline and 3m sideline corners are cropped outside the camera frame.
     """
@@ -141,13 +141,13 @@ def interpolate_court_from_net(
 
     if sideline_point is not None:
         if not (math.isfinite(sideline_point.x) and math.isfinite(sideline_point.y)):
-            raise ValueError("Sideline point must be finite.")
-        anchor = fl if sideline_point.x < floor_mid_x else fr
+            raise ValueError("Sideline point must be finite numbers.")
+        anchor = fl if abs(sideline_point.x - fl.x) <= abs(sideline_point.x - fr.x) else fr
         if sideline_point.y <= anchor.y + 8.0:
-            raise ValueError("Sideline reference point must be on the near court below the net.")
-        # Intersect ray (sideline_point -> anchor) with horizon y = vp_y to solve off-center vanishing point
+            raise ValueError("Sideline point must be on the near court below the net centerline.")
         t_vp = (vp_y - anchor.y) / (sideline_point.y - anchor.y)
-        vp_x = anchor.x + t_vp * (sideline_point.x - anchor.x)
+        raw_vp_x = anchor.x + t_vp * (sideline_point.x - anchor.x)
+        vp_x = max(floor_mid_x - 4.0 * span, min(floor_mid_x + 4.0 * span, raw_vp_x))
 
     if attack_line_y is not None and math.isfinite(attack_line_y):
         denom = max(10.0, floor_mid_y - vp_y)
