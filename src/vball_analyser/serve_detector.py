@@ -171,14 +171,19 @@ def _snapshot_passers(
     tracks: list[PlayerTrack],
     H: np.ndarray,
     target_t: float,
+    net_center_y: float,
 ) -> list[PasserPosition]:
     """Project near-side receiving passers onto top-down court meters at target_t."""
     candidates: list[tuple[float, float]] = []
     for tr in tracks:
+        if tr.court_side != "attacking":
+            continue
         fr = _nearest_pose_frame(tr, target_t, max_delta_s=0.30)
         if fr is None:
             continue
         fx, fy = extract_foot_point(fr)
+        if fy <= net_center_y + 10.0:
+            continue
         try:
             cx, cy = project_image_to_court(H, fx, fy)
         except ValueError:
@@ -189,8 +194,8 @@ def _snapshot_passers(
     if not candidates:
         return []
 
-    # Exclude net-tucked setter/front-row blockers (y < 2.2m) when 2+ deeper passers exist
-    deeper = [c for c in candidates if c[1] >= 2.2]
+    # Exclude net-tucked setter/front-row players (y < 2.8m) when 2+ deeper passers exist
+    deeper = [c for c in candidates if c[1] >= 2.8]
     chosen = deeper if len(deeper) >= 2 else candidates
     chosen.sort(key=lambda c: c[0])
     return [
@@ -203,14 +208,19 @@ def _match_receiving_passer(
     tracks: list[PlayerTrack],
     H: np.ndarray,
     ball: BallDetection,
+    net_center_y: float,
 ) -> tuple[PoseFrame, float, float] | None:
     """Find near-side player contacting the serve at ball.timestamp_s, returning (frame, foot_x_m, foot_y_m)."""
     best_match: tuple[float, PoseFrame, float, float] | None = None
     for tr in tracks:
+        if tr.court_side != "attacking":
+            continue
         fr = _nearest_pose_frame(tr, ball.timestamp_s, max_delta_s=0.18)
         if fr is None:
             continue
         fx, fy = extract_foot_point(fr)
+        if fy <= net_center_y + 10.0:
+            continue
         try:
             cx, cy = project_image_to_court(H, fx, fy)
         except ValueError:
@@ -293,9 +303,9 @@ def detect_serve_events(
                 continue
 
             t_pre = max(w_start, land_ball.timestamp_s - PRE_SERVE_OFFSET_S)
-            passers = _snapshot_passers(tracks, H, t_pre)
+            passers = _snapshot_passers(tracks, H, t_pre, net_center_y)
 
-            receiver = _match_receiving_passer(tracks, H, land_ball)
+            receiver = _match_receiving_passer(tracks, H, land_ball, net_center_y)
             raw_result: Literal["in", "ace", "out", "net"]
             if receiver is not None:
                 rec_frame, fx_m, fy_m = receiver

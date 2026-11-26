@@ -139,10 +139,12 @@ def test_detects_played_serve_in_seam_and_ignores_subsequent_set(tmp_path: Path)
             by = 290.0 - u * 80.0
             balls.append(BallDetection(frame_idx=i, timestamp_s=ts, x=bx, y=by, conf=0.9))
 
+    far_blocker_frames = [_make_pose_frame(i, round(i / fps, 4), p2_recv_px[0], 390.0, height=110.0) for i in range(n_frames)]
     tracks = [
         PlayerTrack(track_id=1, court_side="attacking", frames=p1_frames),
         PlayerTrack(track_id=2, court_side="attacking", frames=p2_frames),
         PlayerTrack(track_id=3, court_side="attacking", frames=p3_frames),
+        PlayerTrack(track_id=99, court_side="blocking", frames=far_blocker_frames),
     ]
     meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=n_frames, duration_s=duration_s, codec="h264")
     events = detect_serve_events(video_path, cal, FakeServePredictor(balls, tracks), meta, server_name="#7")
