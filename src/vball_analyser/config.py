@@ -30,7 +30,7 @@ class AppConfig:
     default_net_height_m: float = 2.43
     net_width_m: float = 9.0
     bind_host: str = "127.0.0.1"
-    default_port: int = 8000
+    default_port: int = 8081
     session_ttl_seconds: int = 28800
     rate_limit_requests: int = 300
     rate_limit_window_s: float = 60.0
