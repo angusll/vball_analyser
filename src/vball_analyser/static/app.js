@@ -53,6 +53,7 @@ const els = {
   netHeightSelect: document.getElementById("netHeightSelect"),
   calScaleBadge: document.getElementById("calScaleBadge"),
   reassignHitterBtn: document.getElementById("reassignHitterBtn"),
+  rerunDetectionBtn: document.getElementById("rerunDetectionBtn"),
   modeHint: document.getElementById("modeHint"),
   cancelModeBtn: document.getElementById("cancelModeBtn"),
   shortcutLegend: document.getElementById("shortcutLegend"),
@@ -178,10 +179,12 @@ function currentFrameIdx() {
 function syncControlsDisabledState() {
   const hasSession = Boolean(state.session);
   const hasPlay = Boolean(getActivePlay());
+  const isBusy = hasSession && state.session.status !== "ready" && state.session.status !== "error";
 
   els.calibrateNetBtn.disabled = !hasSession;
   els.netHeightSelect.disabled = !hasSession;
   els.reassignHitterBtn.disabled = !hasPlay;
+  els.rerunDetectionBtn.disabled = !hasSession || isBusy;
   els.stepBack5Btn.disabled = !hasSession;
   els.stepBack1Btn.disabled = !hasSession;
   els.playPauseBtn.disabled = !hasSession;
@@ -1391,6 +1394,26 @@ function setupEventListeners() {
   els.reassignHitterBtn.addEventListener("click", () => {
     if (!getActivePlay()) return;
     setInteractiveMode(false, !state.reassigningHitter);
+  });
+
+  els.rerunDetectionBtn.addEventListener("click", async () => {
+    if (!state.session) return;
+    setInteractiveMode(false, false);
+    els.rerunDetectionBtn.disabled = true;
+    els.exportStatus.classList.remove("is-error");
+    els.exportStatus.textContent = "";
+    try {
+      const updated = await apiPostJson(
+        `/api/sessions/${encodeURIComponent(state.session.session_id)}/rerun`,
+        {}
+      );
+      applySession(updated, false);
+      refreshSessionsDropdown();
+    } catch (err) {
+      els.exportStatus.classList.add("is-error");
+      els.exportStatus.textContent = err.message;
+      syncControlsDisabledState();
+    }
   });
 
   els.cancelModeBtn.addEventListener("click", () => {

@@ -546,6 +546,36 @@ def create_app(
             raise HTTPException(status_code=404, detail="Session not found.") from exc
         return JSONResponse(updated.model_dump())
 
+    @app.post("/api/sessions/{session_id}/rerun")
+    async def rerun_session_detection(session_id: str, request: Request) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            session = store.load_session(session_id)
+            video_path = store.resolve_web_video_path(session_id)
+            sdir = store.session_dir(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Session or video not found.") from exc
+
+        if session.status in {"queued", "scanning", "analysing"}:
+            raise HTTPException(status_code=409, detail="Session analysis is already in progress.")
+
+        for cache_file in sdir.glob("ball_cache_*.json"):
+            cache_file.unlink(missing_ok=True)
+        thumbs_dir = sdir / "thumbnails"
+        if thumbs_dir.is_dir():
+            for thumb in thumbs_dir.glob("*.jpg"):
+                thumb.unlink(missing_ok=True)
+
+        session.plays = []
+        session.status = "queued"
+        session.progress_pct = 0.0
+        session.error_message = None
+        store.save_session(session)
+        _schedule_analysis(session_id, video_path)
+        return JSONResponse(session.model_dump())
+
     @app.post("/api/sessions/{session_id}/plays/add")
     async def add_play(session_id: str, request: Request, body: AddPlayRequest) -> JSONResponse:
         _require_csrf(request)
