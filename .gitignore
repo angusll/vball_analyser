@@ -3,6 +3,10 @@
 data/
 .vball_secret
 *.pt
+*.engine
+*.onnx
+*.mlpackage/
+*_openvino_model/
 __pycache__/
 *.py[cod]
 .pytest_cache/

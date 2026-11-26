@@ -9,10 +9,12 @@ import pytest
 
 from tests.conftest import make_synthetic_baseline_video
 from vball_analyser.calibration import auto_detect_net_tape
+from types import SimpleNamespace
 from vball_analyser.detector import (
     SyntheticColorPredictor,
     YoloGpuPredictor,
     analyse_play_window,
+    detect_inference_device,
     scan_candidate_plays,
 )
 from vball_analyser.models import AnalysisSession, Point2D
@@ -115,3 +117,54 @@ def test_yolo_gpu_smoke_on_synthetic_clip(synthetic_clip: tuple[Path, dict]) -> 
     assert isinstance(people, list)
     tracks = predictor.track_poses(sample[:2], cal)
     assert isinstance(tracks, list)
+
+
+def test_detect_inference_device_priority_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VBALL_DEVICE", raising=False)
+
+    def _fake_torch(*, cuda: bool = False, xpu: bool = False, mps: bool = False) -> object:
+        return SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: cuda),
+            xpu=SimpleNamespace(is_available=lambda: xpu),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps)),
+        )
+
+    assert detect_inference_device(_fake_torch(cuda=True, xpu=True, mps=True)) == "cuda:0"
+    assert detect_inference_device(_fake_torch(cuda=False, xpu=True, mps=True)) == "xpu:0"
+    assert detect_inference_device(_fake_torch(cuda=False, xpu=False, mps=True)) == "mps"
+    assert detect_inference_device(_fake_torch(cuda=False, xpu=False, mps=False)) == "cpu"
+
+    monkeypatch.setenv("VBALL_DEVICE", "mps")
+    assert detect_inference_device(_fake_torch(cuda=True)) == "mps"
+
+
+def test_predictor_device_batch_defaults_and_weight_resolution(tmp_path: Path) -> None:
+    pt = tmp_path / "yolo11m.pt"
+    pt.write_bytes(b"")
+
+    # MPS prefers .mlpackage when present and uses batch_size=8
+    mlpkg = tmp_path / "yolo11m.mlpackage"
+    mlpkg.mkdir()
+    mps_pred = YoloGpuPredictor(det_weights=str(pt), device="mps")
+    assert mps_pred._batch_size == 8
+    assert mps_pred._resolve_weights(str(pt)) == str(mlpkg)
+    assert mps_pred._infer_kwargs(str(pt)) == {}
+
+    # CPU uses batch_size=4
+    cpu_pred = YoloGpuPredictor(det_weights=str(pt), device="cpu")
+    assert cpu_pred._batch_size == 4
+    assert cpu_pred._infer_kwargs(str(pt)) == {}
+
+    # XPU uses batch_size=8
+    xpu_pred = YoloGpuPredictor(det_weights=str(pt), device="xpu:0")
+    assert xpu_pred._batch_size == 8
+
+    # CUDA uses batch_size=16 and FP16 for .pt
+    cuda_pred = YoloGpuPredictor(det_weights=str(pt), device="cuda:0")
+    assert cuda_pred._batch_size == 16
+    assert cuda_pred._infer_kwargs(str(pt)) == {"quantize": "fp16"}
+    assert cuda_pred._infer_kwargs(str(tmp_path / "yolo11m.engine")) == {}
+
+    # Bare weight filenames resolve inside models_dir
+    bare_pred = YoloGpuPredictor(det_weights="yolo11m.pt", device="cpu", models_dir=tmp_path)
+    assert bare_pred._resolve_weights("yolo11m.pt") == str((tmp_path / "yolo11m.pt").resolve())
