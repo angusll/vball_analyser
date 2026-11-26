@@ -73,6 +73,7 @@
     seekSlider: document.getElementById("serveSeekSlider"),
     courtCanvas: document.getElementById("serveCourtCanvas"),
     selectionInfo: document.getElementById("serveSelectionInfo"),
+    selectedResult: document.getElementById("selectedServeResult"),
     deselectBtn: document.getElementById("deselectServeBtn"),
     undoBtn: document.getElementById("undoServeBtn"),
     resetPassersBtn: document.getElementById("resetPassersBtn"),
@@ -105,6 +106,17 @@
 
   function sharedApi() {
     return window.VBallShared;
+  }
+
+  function withServerQuery(url) {
+    if (sState.activeServer && sState.activeServer !== "All") {
+      return `${url}?server=${encodeURIComponent(sState.activeServer)}`;
+    }
+    return url;
+  }
+
+  function postServe(url, body) {
+    return sharedApi().apiPostJson(withServerQuery(url), body);
   }
 
   function getSelectedServe() {
@@ -606,10 +618,13 @@
     const sel = getSelectedServe();
     if (sel) {
       sEls.deselectBtn.classList.remove("hidden");
+      sEls.selectedResult.classList.remove("hidden");
+      sEls.selectedResult.value = sel.result;
       const seamTxt = sel.is_seam && sel.seam_pair ? ` · ${sel.seam_pair[0]}-${sel.seam_pair[1]} Seam` : "";
       sEls.selectionInfo.textContent = `Selected #${sel.index} (${sel.zone}${seamTxt}) — drag dot or passers to edit`;
     } else {
       sEls.deselectBtn.classList.add("hidden");
+      sEls.selectedResult.classList.add("hidden");
       sEls.selectionInfo.textContent = "Click court to log serve · Drag passers to adjust default formation";
     }
   }
@@ -731,7 +746,7 @@
 
   async function deleteServeById(serveId) {
     if (!sState.session) return;
-    const payload = await sharedApi().apiPostJson(
+    const payload = await postServe(
       `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(serveId)}/delete`,
       {}
     );
@@ -774,7 +789,7 @@
       if (!sState.session) return;
       const vid = sEls.videoSelect.value;
       const body = vid ? { video_session_id: vid } : { clear_video_session: true };
-      const payload = await sharedApi().apiPostJson(
+      const payload = await postServe(
         `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
         body
       );
@@ -815,7 +830,7 @@
       setCalibrationMode(false);
       try {
         showBanner("", false);
-        const payload = await sharedApi().apiPostJson(
+        const payload = await postServe(
           `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/calibration`,
           { front_left, front_right, attack_right, attack_left }
         );
@@ -830,7 +845,7 @@
       try {
         showBanner("", false);
         const srv = sState.activeServer === "All" ? "Unassigned" : sState.activeServer;
-        const payload = await sharedApi().apiPostJson(
+        const payload = await postServe(
           `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/auto-detect`,
           { server_name: srv }
         );
@@ -872,7 +887,7 @@
         btn.classList.add("active");
         const passers = FORMATIONS[count] || FORMATIONS[3];
         sState.selectedServeId = null;
-        const payload = await sharedApi().apiPostJson(
+        const payload = await postServe(
           `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
           { default_passers: passers }
         );
@@ -883,9 +898,19 @@
     sEls.resetPassersBtn.addEventListener("click", async () => {
       if (!sState.session) return;
       sState.selectedServeId = null;
-      const payload = await sharedApi().apiPostJson(
+      const payload = await postServe(
         `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
         { default_passers: FORMATIONS[3] }
+      );
+      applyServePayload(payload);
+    });
+
+    sEls.selectedResult.addEventListener("change", async () => {
+      const sel = getSelectedServe();
+      if (!sState.session || !sel) return;
+      const payload = await postServe(
+        `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
+        { result: sEls.selectedResult.value }
       );
       applyServePayload(payload);
     });
@@ -938,7 +963,7 @@
       const nextServers = [...(sState.session.servers || []), name];
       sEls.newServerInput.value = "";
       sState.activeServer = name;
-      const payload = await sharedApi().apiPostJson(
+      const payload = await postServe(
         `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
         { servers: nextServers }
       );
@@ -956,7 +981,11 @@
       for (let i = 0; i < passers.length; i++) {
         const pt = tf.toPx(passers[i].x_m, passers[i].y_m);
         if (Math.hypot(pos.x - pt.x, pos.y - pt.y) <= 16) {
-          sState.dragTarget = { type: "passer", index: i, moved: false };
+          const sel = getSelectedServe();
+          if (sel && (!Array.isArray(sel.passers_snapshot) || sel.passers_snapshot.length === 0)) {
+            sel.passers_snapshot = passers.map((p) => ({ label: p.label, x_m: p.x_m, y_m: p.y_m }));
+          }
+          sState.dragTarget = { type: "passer", index: i, startX: pos.x, startY: pos.y, moved: false };
           sEls.courtCanvas.setPointerCapture(ev.pointerId);
           return;
         }
@@ -969,7 +998,7 @@
         const pt = tf.toPx(sv.x_m, sv.y_m);
         if (Math.hypot(pos.x - pt.x, pos.y - pt.y) <= 11) {
           selectServe(sv);
-          sState.dragTarget = { type: "serve", serveId: sv.serve_id, moved: false };
+          sState.dragTarget = { type: "serve", serveId: sv.serve_id, startX: pos.x, startY: pos.y, moved: false };
           sEls.courtCanvas.setPointerCapture(ev.pointerId);
           return;
         }
@@ -979,6 +1008,9 @@
     sEls.courtCanvas.addEventListener("pointermove", (ev) => {
       if (!sState.dragTarget || !sState.session) return;
       const pos = canvasPointerPos(sEls.courtCanvas, ev);
+      if (!sState.dragTarget.moved && Math.hypot(pos.x - sState.dragTarget.startX, pos.y - sState.dragTarget.startY) <= 4) {
+        return;
+      }
       const tf = courtTransform(sEls.courtCanvas.clientWidth, sEls.courtCanvas.clientHeight);
       const { x_m, y_m } = tf.toCourt(pos.x, pos.y);
       sState.dragTarget.moved = true;
@@ -1014,13 +1046,13 @@
         if (drag.type === "passer") {
           const sel = getSelectedServe();
           if (sel) {
-            const payload = await sharedApi().apiPostJson(
+            const payload = await postServe(
               `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
               { passers_snapshot: sel.passers_snapshot }
             );
             applyServePayload(payload);
           } else {
-            const payload = await sharedApi().apiPostJson(
+            const payload = await postServe(
               `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
               { default_passers: sState.session.default_passers }
             );
@@ -1029,7 +1061,7 @@
         } else if (drag.type === "serve") {
           const sv = sState.session.serves.find((s) => s.serve_id === drag.serveId);
           if (sv) {
-            const payload = await sharedApi().apiPostJson(
+            const payload = await postServe(
               `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sv.serve_id)}/update`,
               { x_m: sv.x_m, y_m: sv.y_m }
             );
@@ -1045,7 +1077,7 @@
       const clampedY = Math.max(-0.5, Math.min(10.8, y_m));
       const serverName = sState.activeServer === "All" ? "Unassigned" : sState.activeServer;
       const ts = sState.session.video_session_id && sEls.video.src ? sEls.video.currentTime : null;
-      const payload = await sharedApi().apiPostJson(
+      const payload = await postServe(
         `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves`,
         {
           x_m: clampedX,

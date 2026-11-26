@@ -340,6 +340,12 @@
           <div class="serve-court-footer">
             <span id="serveSelectionInfo" class="serve-selection-info">Click court to log serve &middot; Drag passers to adjust formation</span>
             <div class="serve-footer-btns">
+              <select id="selectedServeResult" class="select-input select-compact hidden" aria-label="Selected serve result">
+                <option value="in">Result: In</option>
+                <option value="ace">Result: Ace</option>
+                <option value="out">Result: Out</option>
+                <option value="net">Result: Net</option>
+              </select>
               <button id="deselectServeBtn" class="btn btn-ghost btn-small hidden" type="button">Deselect</button>
               <button id="undoServeBtn" class="btn btn-secondary btn-small" type="button">Undo</button>
               <button id="resetPassersBtn" class="btn btn-secondary btn-small" type="button">Reset Passers</button>

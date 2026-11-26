@@ -150,6 +150,25 @@ def test_serve_session_full_workflow(tmp_path: Path) -> None:
         assert client.get(f"/api/serve-sessions/{sid}").status_code == 404
 
 
+def test_post_mutations_respect_server_filter_query(tmp_path: Path) -> None:
+    client, _ = _make_client(tmp_path)
+    with client:
+        csrf = client.get("/api/csrf").json()["csrf_token"]
+        hdr = {"X-CSRF-Token": csrf}
+        sid = client.post("/api/serve-sessions", json={"name": "Filter Test"}, headers=hdr).json()["session"]["serve_session_id"]
+        client.post(f"/api/serve-sessions/{sid}/serves", json={"x_m": 2.0, "y_m": 6.0, "result": "in", "server_name": "#9"}, headers=hdr)
+
+        # Adding a serve for #7 with ?server=%237 must return #7's filtered summary (total == 1, not 2)
+        res = client.post(
+            f"/api/serve-sessions/{sid}/serves?server=%237",
+            json={"x_m": 3.15, "y_m": 6.3, "result": "ace", "server_name": "#7"},
+            headers=hdr,
+        )
+        assert res.status_code == 200
+        assert res.json()["summary"]["total"] == 1
+        assert res.json()["summary"]["ace_pct"] == 100.0
+
+
 def test_index_contains_tabs_and_serves_serve_tab_js(tmp_path: Path) -> None:
     client, _ = _make_client(tmp_path)
     with client:
@@ -158,6 +177,7 @@ def test_index_contains_tabs_and_serves_serve_tab_js(tmp_path: Path) -> None:
         assert 'data-tab="serve"' in html
         assert 'id="serveTab"' in html
         assert 'id="serveCourtCanvas"' in html
+        assert 'id="selectedServeResult"' in html
         assert "/static/serve_tab.js" in html
         js = client.get("/static/serve_tab.js")
         assert js.status_code == 200

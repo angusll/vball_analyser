@@ -1237,6 +1237,9 @@ function setupEventListeners() {
   els.openLoadBtn.addEventListener("click", () => openModal("studio"));
   els.emptyLoadBtn.addEventListener("click", () => openModal("studio"));
   els.closeLoadBtn.addEventListener("click", () => els.loadDialog.close());
+  els.loadDialog.addEventListener("close", () => {
+    state.loadModalMode = "studio";
+  });
 
   function switchTab(tabName) {
     state.activeTab = tabName;

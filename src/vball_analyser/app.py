@@ -722,7 +722,10 @@ def create_app(
 
     @app.post("/api/serve-sessions/{serve_session_id}/update")
     async def update_serve_session(
-        serve_session_id: str, request: Request, body: UpdateServeSessionRequest
+        serve_session_id: str,
+        request: Request,
+        body: UpdateServeSessionRequest,
+        server: str | None = None,
     ) -> JSONResponse:
         _require_csrf(request)
         try:
@@ -741,7 +744,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Session not found.") from exc
-        return JSONResponse(_serve_payload(sess))
+        return JSONResponse(_serve_payload(sess, server_filter=server))
 
     @app.post("/api/serve-sessions/{serve_session_id}/delete")
     async def delete_serve_session(serve_session_id: str, request: Request) -> JSONResponse:
@@ -756,7 +759,10 @@ def create_app(
 
     @app.post("/api/serve-sessions/{serve_session_id}/calibration")
     async def save_serve_calibration(
-        serve_session_id: str, request: Request, body: CourtCalibrationRequest
+        serve_session_id: str,
+        request: Request,
+        body: CourtCalibrationRequest,
+        server: str | None = None,
     ) -> JSONResponse:
         _require_csrf(request)
         try:
@@ -772,11 +778,14 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Serve session not found.") from exc
-        return JSONResponse(_serve_payload(sess))
+        return JSONResponse(_serve_payload(sess, server_filter=server))
 
     @app.post("/api/serve-sessions/{serve_session_id}/auto-detect")
     async def trigger_serve_auto_detect(
-        serve_session_id: str, request: Request, body: AutoDetectServesRequest
+        serve_session_id: str,
+        request: Request,
+        body: AutoDetectServesRequest,
+        server: str | None = None,
     ) -> JSONResponse:
         _require_csrf(request)
         try:
@@ -799,11 +808,14 @@ def create_app(
         task = asyncio.create_task(_run_serve_auto_detect(serve_session_id, body.server_name))
         active_tasks.add(task)
         task.add_done_callback(active_tasks.discard)
-        return JSONResponse(_serve_payload(sess))
+        return JSONResponse(_serve_payload(sess, server_filter=server))
 
     @app.post("/api/serve-sessions/{serve_session_id}/serves")
     async def add_serve_event(
-        serve_session_id: str, request: Request, body: AddServeRequest
+        serve_session_id: str,
+        request: Request,
+        body: AddServeRequest,
+        server: str | None = None,
     ) -> JSONResponse:
         _require_csrf(request)
         try:
@@ -822,11 +834,15 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Serve session not found.") from exc
-        return JSONResponse(_serve_payload(sess))
+        return JSONResponse(_serve_payload(sess, server_filter=server))
 
     @app.post("/api/serve-sessions/{serve_session_id}/serves/{serve_id}/update")
     async def update_serve_event(
-        serve_session_id: str, serve_id: str, request: Request, body: UpdateServeRequest
+        serve_session_id: str,
+        serve_id: str,
+        request: Request,
+        body: UpdateServeRequest,
+        server: str | None = None,
     ) -> JSONResponse:
         _require_csrf(request)
         try:
@@ -845,11 +861,14 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Serve session not found.") from exc
-        return JSONResponse(_serve_payload(sess))
+        return JSONResponse(_serve_payload(sess, server_filter=server))
 
     @app.post("/api/serve-sessions/{serve_session_id}/serves/{serve_id}/delete")
     async def delete_serve_event(
-        serve_session_id: str, serve_id: str, request: Request
+        serve_session_id: str,
+        serve_id: str,
+        request: Request,
+        server: str | None = None,
     ) -> JSONResponse:
         _require_csrf(request)
         try:
@@ -860,7 +879,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Serve session not found.") from exc
-        return JSONResponse(_serve_payload(sess))
+        return JSONResponse(_serve_payload(sess, server_filter=server))
 
     return app
 

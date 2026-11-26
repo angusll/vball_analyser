@@ -234,3 +234,61 @@ def test_empty_video_returns_no_serves(tmp_path: Path) -> None:
     meta = VideoMetadata(width=1056, height=576, fps=15.0, frame_count=30, duration_s=2.0, codec="h264")
     events = detect_serve_events(video_path, cal, FakeServePredictor([], []), meta)
     assert events == []
+
+
+def test_ignores_high_net_spike_after_refractory_gap(tmp_path: Path) -> None:
+    video_path = tmp_path / "rally_late_spike.mp4"
+    fps = 15.0
+    duration_s = 7.0
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+    land_px = project_court_to_image(H_inv, 4.5, 6.0)
+
+    balls: list[BallDetection] = []
+    # Real serve descending into near court at t=1.6s (frame 24)
+    for i in range(10, 25):
+        u = (i - 10) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=528.0, y=160.0 + u * (land_px[1] - 160.0), conf=0.9))
+    for i in range(25, 31):
+        u = (i - 24) / 6.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=528.0, y=land_px[1] - u * 80.0, conf=0.9))
+
+    # High set/spike contact 3.5s later (t=5.1s, > 2.5s refractory) that stays high above net centerline (y=260 < 370)
+    for i in range(68, 78):
+        u = (i - 68) / 9.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=480.0, y=170.0 + u * 90.0, conf=0.9))
+    for i in range(78, 84):
+        u = (i - 77) / 6.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=480.0, y=260.0 - u * 60.0, conf=0.9))
+
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=int(fps * duration_s), duration_s=duration_s, codec="h264")
+    events = detect_serve_events(video_path, cal, FakeServePredictor(balls, []), meta)
+    assert len(events) == 1
+    assert events[0].timestamp_s is not None and abs(events[0].timestamp_s - 1.6) < 0.25
+
+
+def test_long_clip_coarse_scan_handles_missed_frame(tmp_path: Path) -> None:
+    video_path = tmp_path / "long_clip.mp4"
+    fps = 15.0
+    duration_s = 22.0
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+    land_px = project_court_to_image(H_inv, 7.2, 6.2)
+
+    balls: list[BallDetection] = []
+    # Single serve around t=10.0s..11.0s (frames 150..165), dropping middle coarse frames around 156..158
+    for i in range(150, 166):
+        if i in (156, 157, 158):
+            continue
+        u = (i - 150) / 15.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=520.0 + u * (land_px[0] - 520.0), y=160.0 + u * (land_px[1] - 160.0), conf=0.9))
+    for i in range(166, 173):
+        u = (i - 165) / 7.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=land_px[0], y=land_px[1] - u * 70.0, conf=0.9))
+
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=int(fps * duration_s), duration_s=duration_s, codec="h264")
+    events = detect_serve_events(video_path, cal, FakeServePredictor(balls, []), meta)
+    assert len(events) == 1
+    assert events[0].zone == "Zone 1"

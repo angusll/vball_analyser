@@ -101,9 +101,12 @@ def _select_best_ball_series(detections: list[BallDetection]) -> list[BallDetect
 def _find_serve_landing_balls(
     series: list[BallDetection],
     net_center_y: float,
+    *,
+    max_gap_s: float = 0.35,
+    min_points: int = 5,
 ) -> list[BallDetection]:
     """Find serve reception/landing ball frames from descending high-to-low trajectories."""
-    if len(series) < 5:
+    if len(series) < min_points:
         return []
 
     landings: list[BallDetection] = []
@@ -121,7 +124,7 @@ def _find_serve_landing_balls(
         j = i
         # Follow descent while allowing brief 1-frame plateaus/jitter
         while j < n:
-            if series[j].y >= series[j - 1].y - 3.0 and (series[j].timestamp_s - series[j - 1].timestamp_s) <= 0.35:
+            if series[j].y >= series[j - 1].y - 3.0 and (series[j].timestamp_s - series[j - 1].timestamp_s) <= max_gap_s:
                 j += 1
             else:
                 break
@@ -132,20 +135,15 @@ def _find_serve_landing_balls(
         descent_px = end_b.y - start_b.y
         descent_dt = end_b.timestamp_s - start_b.timestamp_s
 
-        # Verify serve origin is high (above/near net centerline) and descent is substantial
+        # Verify serve origin is high (above/near net centerline) and reception/bounce reaches near court
         started_high = start_b.y <= net_center_y + 25.0
-        has_rebound = (
-            run_end + 1 < n
-            and (series[run_end + 1].timestamp_s - end_b.timestamp_s) <= 0.35
-            and series[run_end + 1].y < end_b.y - 2.0
-        )
-        ended_low = end_b.y >= net_center_y - 15.0
+        ended_low = end_b.y >= net_center_y - 10.0
 
         if (
             started_high
+            and ended_low
             and descent_px >= MIN_DESCENT_PX
             and descent_dt >= MIN_DESCENT_DURATION_S
-            and (has_rebound or ended_low)
             and (end_b.timestamp_s - last_accepted_t) >= REFRACTORY_GAP_S
         ):
             landings.append(end_b)
@@ -253,10 +251,10 @@ def _extract_candidate_windows(
     if metadata.duration_s <= DEFAULT_CONFIG.short_clip_max_sec:
         return [(0.0, metadata.duration_s)]
 
-    coarse_frames = list(iter_video_frames(video_path, start_s=0.0, end_s=metadata.duration_s, sample_fps=5.0))
+    coarse_frames = list(iter_video_frames(video_path, start_s=0.0, end_s=metadata.duration_s, sample_fps=6.0))
     coarse_balls, _ = predictor.scan_coarse(coarse_frames, net_cal)
     series = _select_best_ball_series(coarse_balls)
-    landings = _find_serve_landing_balls(series, net_center_y=net_center_y)
+    landings = _find_serve_landing_balls(series, net_center_y=net_center_y, max_gap_s=0.65, min_points=3)
     if not landings:
         return []
 
