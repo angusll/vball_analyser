@@ -206,7 +206,7 @@ def test_index_contains_tabs_and_serves_serve_tab_js(tmp_path: Path) -> None:
         assert 'id="serveTab"' in html
         assert 'id="serveCourtCanvas"' in html
         assert 'id="selectedServeResult"' in html
-        assert 'id="toggleVideoCardBtn"' in html
+        assert 'id="toggleCalOverlayBtn"' in html
         assert 'class="topbar-left"' in html
         assert "/static/serve_tab.js" in html
         js = client.get("/static/serve_tab.js")
