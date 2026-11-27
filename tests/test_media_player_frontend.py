@@ -69,3 +69,18 @@ def test_js_syntax_and_media_player_node_unit_tests() -> None:
         check=False,
     )
     assert unit.returncode == 0, f"node --test failed:\n{unit.stdout}\n{unit.stderr}"
+
+
+def test_serve_tab_uses_shared_media_player_only() -> None:
+    serve_js = (STATIC_DIR / "serve_tab.js").read_text(encoding="utf-8")
+    for legacy_token in (
+        '"serveVideo"',
+        '"serveVideoCanvas"',
+        '"servePlayPauseBtn"',
+        '"serveSeekSlider"',
+        '"serveVideoTime"',
+        "getServeVideoRect",
+    ):
+        assert legacy_token not in serve_js, f"Legacy Serve player reference still present: {legacy_token}"
+    assert "mediaPlayer" in serve_js
+    assert "servePlayerSlot" in serve_js
