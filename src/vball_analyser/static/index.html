@@ -126,99 +126,103 @@
         </div>
       </div>
 
-      <div id="videoStage" class="video-stage">
-        <video id="playerVideo" playsinline preload="auto"></video>
-        <canvas id="overlayCanvas"></canvas>
+      <div id="studioPlayerSlot" class="player-slot">
+        <div id="mediaPlayerRoot" class="media-player">
+          <div id="videoStage" class="video-stage">
+            <video id="playerVideo" playsinline preload="auto"></video>
+            <canvas id="overlayCanvas"></canvas>
 
-        <div id="stageDropOverlay" class="stage-drop-overlay hidden" aria-hidden="true">
-          <div class="drop-overlay-card">
-            <svg class="drop-overlay-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 16V4"/>
-              <path d="m7 9 5-5 5 5"/>
-              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
-            </svg>
-            <p>Drop video file (.mp4, .mov, .mkv, .avi) to analyse</p>
-          </div>
-        </div>
-
-        <div id="emptyState" class="empty-state">
-          <div class="empty-card">
-            <div class="empty-illustration" aria-hidden="true">
-              <svg viewBox="0 0 220 92" fill="none">
-                <line x1="20" y1="62" x2="200" y2="62" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
-                <line x1="34" y1="30" x2="34" y2="66" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
-                <line x1="186" y1="30" x2="186" y2="66" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
-                <line x1="34" y1="40" x2="186" y2="40" stroke="#e2e8f0" stroke-width="2" stroke-dasharray="4 3"/>
-                <path d="M 156 68 Q 112 8 68 32" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
-                <circle cx="156" cy="68" r="3.5" fill="#38bdf8"/>
-                <circle cx="112" cy="24" r="3" fill="#38bdf8" opacity="0.8"/>
-                <circle cx="68" cy="32" r="6" fill="#facc15" stroke="#090d16" stroke-width="2"/>
-                <circle cx="68" cy="32" r="10.5" stroke="#facc15" stroke-width="1.2" stroke-dasharray="3 2.5"/>
-              </svg>
+            <div id="stageDropOverlay" class="stage-drop-overlay hidden" aria-hidden="true">
+              <div class="drop-overlay-card">
+                <svg class="drop-overlay-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 16V4"/>
+                  <path d="m7 9 5-5 5 5"/>
+                  <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+                </svg>
+                <p>Drop video file (.mp4, .mov, .mkv, .avi) to analyse</p>
+              </div>
             </div>
-            <h2>Load a Baseline Volleyball Video</h2>
-            <p>Drop a short single-play clip or point to an uncut session file on disk to inspect setting path, hitter posture, contact height, and block seams.</p>
-            <div class="empty-features" aria-hidden="true">
-              <span class="feature-chip chip-cyan">Set Trajectory</span>
-              <span class="feature-chip chip-green">2D Hitter Pose</span>
-              <span class="feature-chip chip-gold">Contact Height</span>
-              <span class="feature-chip chip-rose">Block Seam</span>
+
+            <div id="emptyState" class="empty-state">
+              <div class="empty-card">
+                <div class="empty-illustration" aria-hidden="true">
+                  <svg viewBox="0 0 220 92" fill="none">
+                    <line x1="20" y1="62" x2="200" y2="62" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
+                    <line x1="34" y1="30" x2="34" y2="66" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+                    <line x1="186" y1="30" x2="186" y2="66" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+                    <line x1="34" y1="40" x2="186" y2="40" stroke="#e2e8f0" stroke-width="2" stroke-dasharray="4 3"/>
+                    <path d="M 156 68 Q 112 8 68 32" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
+                    <circle cx="156" cy="68" r="3.5" fill="#38bdf8"/>
+                    <circle cx="112" cy="24" r="3" fill="#38bdf8" opacity="0.8"/>
+                    <circle cx="68" cy="32" r="6" fill="#facc15" stroke="#090d16" stroke-width="2"/>
+                    <circle cx="68" cy="32" r="10.5" stroke="#facc15" stroke-width="1.2" stroke-dasharray="3 2.5"/>
+                  </svg>
+                </div>
+                <h2>Load a Baseline Volleyball Video</h2>
+                <p>Drop a short single-play clip or point to an uncut session file on disk to inspect setting path, hitter posture, contact height, and block seams.</p>
+                <div class="empty-features" aria-hidden="true">
+                  <span class="feature-chip chip-cyan">Set Trajectory</span>
+                  <span class="feature-chip chip-green">2D Hitter Pose</span>
+                  <span class="feature-chip chip-gold">Contact Height</span>
+                  <span class="feature-chip chip-rose">Block Seam</span>
+                </div>
+                <button id="emptyLoadBtn" class="btn btn-primary btn-lg" type="button">
+                  <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 10V3"/>
+                    <path d="M5 5.5 8 2.5l3 3"/>
+                    <path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2"/>
+                  </svg>
+                  <span>Open Video Loader</span>
+                </button>
+                <p class="empty-hint">Or drag and drop an MP4, MOV, MKV, or AVI clip directly onto this stage</p>
+              </div>
             </div>
-            <button id="emptyLoadBtn" class="btn btn-primary btn-lg" type="button">
-              <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M8 10V3"/>
-                <path d="M5 5.5 8 2.5l3 3"/>
-                <path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2"/>
-              </svg>
-              <span>Open Video Loader</span>
-            </button>
-            <p class="empty-hint">Or drag and drop an MP4, MOV, MKV, or AVI clip directly onto this stage</p>
           </div>
-        </div>
-      </div>
 
-      <div class="transport-bar">
-        <div class="transport-buttons">
-          <button id="stepBack5Btn" class="btn btn-icon" type="button" title="Back 5 frames" aria-label="Step back 5 frames">-5f</button>
-          <button id="stepBack1Btn" class="btn btn-icon" type="button" title="Back 1 frame (Left Arrow)" aria-label="Step back 1 frame">
-            <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4.5 3.5v9"/>
-              <path d="M11.5 3.5 6 8l5.5 4.5z" fill="currentColor" stroke="none"/>
-            </svg>
-            <span>1f</span>
-          </button>
-          <button id="playPauseBtn" class="btn btn-primary btn-play" type="button" aria-label="Play or pause video">
-            <svg class="btn-svg icon-play" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-              <path d="M4.5 3.2 12.5 8l-8 4.8z"/>
-            </svg>
-            <svg class="btn-svg icon-pause" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-              <rect x="4" y="3.2" width="2.8" height="9.6" rx="0.8"/>
-              <rect x="9.2" y="3.2" width="2.8" height="9.6" rx="0.8"/>
-            </svg>
-            <span id="playPauseLabel">Play</span>
-          </button>
-          <button id="stepFwd1Btn" class="btn btn-icon" type="button" title="Forward 1 frame (Right Arrow)" aria-label="Step forward 1 frame">
-            <span>1f</span>
-            <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M11.5 3.5v9"/>
-              <path d="M4.5 3.5 10 8l-5.5 4.5z" fill="currentColor" stroke="none"/>
-            </svg>
-          </button>
-          <button id="stepFwd5Btn" class="btn btn-icon" type="button" title="Forward 5 frames" aria-label="Step forward 5 frames">+5f</button>
-        </div>
+          <div class="transport-bar">
+            <div class="transport-buttons">
+              <button id="stepBack5Btn" class="btn btn-icon" type="button" title="Back 5 frames" aria-label="Step back 5 frames">-5f</button>
+              <button id="stepBack1Btn" class="btn btn-icon" type="button" title="Back 1 frame (Left Arrow)" aria-label="Step back 1 frame">
+                <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M4.5 3.5v9"/>
+                  <path d="M11.5 3.5 6 8l5.5 4.5z" fill="currentColor" stroke="none"/>
+                </svg>
+                <span>1f</span>
+              </button>
+              <button id="playPauseBtn" class="btn btn-primary btn-play" type="button" aria-label="Play or pause video">
+                <svg class="btn-svg icon-play" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M4.5 3.2 12.5 8l-8 4.8z"/>
+                </svg>
+                <svg class="btn-svg icon-pause" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <rect x="4" y="3.2" width="2.8" height="9.6" rx="0.8"/>
+                  <rect x="9.2" y="3.2" width="2.8" height="9.6" rx="0.8"/>
+                </svg>
+                <span id="playPauseLabel">Play</span>
+              </button>
+              <button id="stepFwd1Btn" class="btn btn-icon" type="button" title="Forward 1 frame (Right Arrow)" aria-label="Step forward 1 frame">
+                <span>1f</span>
+                <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M11.5 3.5v9"/>
+                  <path d="M4.5 3.5 10 8l-5.5 4.5z" fill="currentColor" stroke="none"/>
+                </svg>
+              </button>
+              <button id="stepFwd5Btn" class="btn btn-icon" type="button" title="Forward 5 frames" aria-label="Step forward 5 frames">+5f</button>
+            </div>
 
-        <div class="timeline-wrap">
-          <canvas id="timelineCanvas" class="timeline-canvas" aria-hidden="true"></canvas>
-          <input id="seekSlider" class="seek-slider" type="range" min="0" max="1" step="0.001" value="0" aria-label="Video timeline">
-        </div>
+            <div class="timeline-wrap">
+              <canvas id="timelineCanvas" class="timeline-canvas" aria-hidden="true"></canvas>
+              <input id="seekSlider" class="seek-slider" type="range" min="0" max="1" step="0.001" value="0" aria-label="Video timeline">
+            </div>
 
-        <div class="transport-meta">
-          <div class="speed-group" role="group" aria-label="Playback speed">
-            <button class="speed-btn" data-speed="0.25" type="button" aria-pressed="false">0.25x</button>
-            <button class="speed-btn" data-speed="0.5" type="button" aria-pressed="false">0.5x</button>
-            <button class="speed-btn active" data-speed="1" type="button" aria-pressed="true">1x</button>
+            <div class="transport-meta">
+              <div class="speed-group" role="group" aria-label="Playback speed">
+                <button class="speed-btn" data-speed="0.25" type="button" aria-pressed="false">0.25x</button>
+                <button class="speed-btn" data-speed="0.5" type="button" aria-pressed="false">0.5x</button>
+                <button class="speed-btn active" data-speed="1" type="button" aria-pressed="true">1x</button>
+              </div>
+              <span id="timeReadout" class="time-readout">0.00s · f0</span>
+            </div>
           </div>
-          <span id="timeReadout" class="time-readout">0.00s · f0</span>
         </div>
       </div>
 
@@ -308,17 +312,9 @@
             <div class="serve-panel-actions">
               <span id="serveCalHint" class="mode-hint hidden"></span>
               <button id="cancelServeCalBtn" class="btn btn-ghost btn-small hidden" type="button">Cancel</button>
-              <button id="servePlayPauseBtn" class="btn btn-secondary btn-small" type="button">Play</button>
-              <span id="serveVideoTime" class="time-readout">0.00s</span>
             </div>
           </div>
-          <div id="serveVideoStage" class="serve-video-stage">
-            <video id="serveVideo" playsinline preload="auto"></video>
-            <canvas id="serveVideoCanvas"></canvas>
-          </div>
-          <div class="serve-video-scrub">
-            <input id="serveSeekSlider" class="seek-slider" type="range" min="0" max="1" step="0.01" value="0" aria-label="Serve video timeline">
-          </div>
+          <div id="servePlayerSlot" class="player-slot serve-player-slot"></div>
         </div>
 
         <div class="serve-panel serve-court-panel">
@@ -452,6 +448,7 @@
     </div>
   </dialog>
 
+  <script src="/static/media_player.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/serve_tab.js" defer></script>
 </body>
