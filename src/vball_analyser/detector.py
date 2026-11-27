@@ -28,7 +28,12 @@ from vball_analyser.models import (
     VideoMetadata,
 )
 from vball_analyser.trajectory import fit_setting_path
-from vball_analyser.video_io import extract_keyframe_jpeg, iter_video_frames
+from vball_analyser.video_io import (
+    extract_keyframe_jpeg,
+    iter_video_frame_batches,
+    iter_video_frames,
+    should_use_nvdec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,10 +240,14 @@ class YoloGpuPredictor:
         return self._device
 
     @property
-    def _batch_size(self) -> int:
+    def batch_size(self) -> int:
         if self._explicit_batch_size is not None:
             return self._explicit_batch_size
         return _default_batch_size_for_device(self.device)
+
+    @property
+    def _batch_size(self) -> int:
+        return self.batch_size
 
     @property
     def _is_cuda(self) -> bool:
@@ -757,11 +766,25 @@ def scan_candidate_plays(
     if metadata.duration_s <= DEFAULT_CONFIG.short_clip_max_sec:
         return [(0.0, metadata.duration_s)]
 
-    coarse_frames = list(iter_video_frames(video_path, start_s=0.0, end_s=metadata.duration_s, sample_fps=10.0))
-    if not coarse_frames:
+    batch_size = int(getattr(predictor, "batch_size", None) or getattr(predictor, "_batch_size", 16) or 16)
+    use_nvdec = should_use_nvdec(metadata.frame_count)
+    balls: list[BallDetection] = []
+    people: list[tuple[int, float, tuple[float, float, float, float]]] = []
+    seen_any = False
+    for batch in iter_video_frame_batches(
+        video_path,
+        start_s=0.0,
+        end_s=metadata.duration_s,
+        sample_fps=10.0,
+        batch_size=batch_size,
+        use_nvdec=use_nvdec,
+    ):
+        seen_any = True
+        b_chunk, p_chunk = predictor.scan_coarse(batch, calibration)
+        balls.extend(b_chunk)
+        people.extend(p_chunk)
+    if not seen_any:
         return [(0.0, min(metadata.duration_s, 5.0))]
-
-    balls, people = predictor.scan_coarse(coarse_frames, calibration)
     # Identify moving balls above net tape (+35px margin)
     by_ts: dict[float, list[BallDetection]] = {}
     for b in balls:
@@ -803,6 +826,7 @@ def scan_candidate_plays(
         else:
             clusters.append([ts])
 
+    max_merged_window_s = 25.0
     windows: list[tuple[float, float]] = []
     for cl in clusters:
         if len(cl) < 2 and len(clusters) > 1:
@@ -811,7 +835,11 @@ def scan_candidate_plays(
         w_start = max(0.0, round(t_center - 3.5, 2))
         w_end = min(metadata.duration_s, round(t_center + 1.5, 2))
         if w_end - w_start >= 1.2:
-            if windows and w_start <= windows[-1][1]:
+            if (
+                windows
+                and w_start <= windows[-1][1]
+                and (max(windows[-1][1], w_end) - windows[-1][0]) <= max_merged_window_s
+            ):
                 windows[-1] = (windows[-1][0], max(windows[-1][1], w_end))
             else:
                 windows.append((w_start, w_end))

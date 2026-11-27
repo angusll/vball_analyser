@@ -29,7 +29,7 @@ from vball_analyser.serve_geometry import (
     project_image_to_court,
     score_receive,
 )
-from vball_analyser.video_io import iter_video_frames
+from vball_analyser.video_io import iter_video_frame_batches, iter_video_frames, should_use_nvdec
 
 REFRACTORY_GAP_S = 2.5
 POST_RECEIVE_COOLDOWN_S = 6.0
@@ -513,8 +513,19 @@ def _extract_candidate_windows(
     if metadata.duration_s <= DEFAULT_CONFIG.short_clip_max_sec:
         return [(0.0, metadata.duration_s)]
 
-    coarse_frames = list(iter_video_frames(video_path, start_s=0.0, end_s=metadata.duration_s, sample_fps=6.0))
-    coarse_balls, _ = predictor.scan_coarse(coarse_frames, net_cal)
+    batch_size = int(getattr(predictor, "batch_size", None) or getattr(predictor, "_batch_size", 16) or 16)
+    use_nvdec = should_use_nvdec(metadata.frame_count)
+    coarse_balls: list[BallDetection] = []
+    for batch in iter_video_frame_batches(
+        video_path,
+        start_s=0.0,
+        end_s=metadata.duration_s,
+        sample_fps=6.0,
+        batch_size=batch_size,
+        use_nvdec=use_nvdec,
+    ):
+        b_chunk, _ = predictor.scan_coarse(batch, net_cal)
+        coarse_balls.extend(b_chunk)
     series = _select_best_ball_series(coarse_balls)
     landings = _find_serve_landing_balls(
         series, net_center_y=net_center_y, net_tape_y=net_tape_y, max_gap_s=0.65, min_points=3
@@ -526,9 +537,10 @@ def _extract_candidate_windows(
         (max(0.0, b.timestamp_s - 2.5), min(metadata.duration_s, b.timestamp_s + 3.0))
         for b in landings
     ]
+    max_merged_window_s = 25.0
     merged: list[tuple[float, float]] = []
     for ws, we in sorted(raw_windows):
-        if merged and ws <= merged[-1][1]:
+        if merged and ws <= merged[-1][1] and (max(merged[-1][1], we) - merged[-1][0]) <= max_merged_window_s:
             merged[-1] = (merged[-1][0], max(merged[-1][1], we))
         else:
             merged.append((ws, we))
