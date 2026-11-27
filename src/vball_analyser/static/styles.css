@@ -271,6 +271,11 @@ body {
   border-color: var(--primary-hover);
 }
 
+.btn-primary:active:not(:disabled) {
+  background: #d1d5db;
+  border-color: #d1d5db;
+}
+
 .btn-secondary {
   background: var(--bg-2);
   border-color: var(--border-default);
@@ -1225,6 +1230,10 @@ body {
 }
 
 /* Play Mechanics Key-Value List (flat, no nested cards or left bars) */
+.metrics-panel {
+  border-bottom: none;
+}
+
 .metrics-grid {
   display: flex;
   flex-direction: column;
@@ -1270,6 +1279,35 @@ body {
   font-size: 0.76rem;
   font-weight: 500;
   color: var(--text-2);
+}
+
+.metric-toggle {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline dotted rgba(184, 190, 200, 0.35);
+  text-underline-offset: 3px;
+  transition: color 140ms ease, text-decoration-color 140ms ease;
+}
+
+.metric-toggle:hover,
+.metric-toggle:focus-visible,
+.metric-toggle[aria-expanded="true"] {
+  color: var(--text-1);
+  text-decoration-color: var(--text-2);
+}
+
+.metric-desc {
+  margin-top: 0.25rem;
+  padding-left: 0.78rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 .metric-val-wrap {
@@ -1799,7 +1837,7 @@ body {
 .serve-kpi-value.accent-purple { color: var(--violet); }
 .serve-kpi-value.accent-rose { color: var(--rose); }
 
-.receive-bar-row {
+.zone-bar-row.receive-bar-row {
   grid-template-columns: 84px minmax(0, 1fr) 62px;
 }
 
@@ -2142,6 +2180,7 @@ body {
   .video-stage {
     aspect-ratio: auto;
     min-height: 280px;
+    max-height: 70vh;
   }
 
   .transport-bar {
@@ -2177,8 +2216,11 @@ body {
 
   .btn,
   .speed-btn,
-  .pill {
+  .pill,
+  .serve-mode-btn,
+  .tab-btn {
     min-height: 32px;
+    height: auto;
   }
 }
 

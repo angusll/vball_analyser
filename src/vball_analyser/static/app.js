@@ -822,7 +822,7 @@ function renderKeyframes(play) {
   if (!play || !play.keyframes.length) {
     const empty = document.createElement("div");
     empty.className = "keyframe-placeholder";
-    empty.textContent = "Select or load a play to jump to Set Release, Max Load, and Ball Contact.";
+    empty.textContent = "Select a play to jump to Set Release, Max Load, and Ball Contact.";
     els.keyframesStrip.appendChild(empty);
     return;
   }
@@ -898,7 +898,6 @@ function renderMetrics(play) {
   for (const row of rows) {
     const item = document.createElement("div");
     item.className = `metric-item ${row.accentClass}`;
-    if (row.desc) item.title = row.desc;
 
     const head = document.createElement("div");
     head.className = "metric-head";
@@ -912,7 +911,29 @@ function renderMetrics(play) {
 
     const dt = document.createElement("dt");
     dt.className = "metric-label";
-    dt.textContent = row.label;
+
+    let descEl = null;
+    if (row.desc) {
+      const toggleBtn = document.createElement("button");
+      toggleBtn.type = "button";
+      toggleBtn.className = "metric-toggle";
+      toggleBtn.textContent = row.label;
+      toggleBtn.title = row.desc;
+      toggleBtn.setAttribute("aria-expanded", "false");
+
+      descEl = document.createElement("dd");
+      descEl.className = "metric-desc hidden";
+      descEl.textContent = row.desc;
+
+      toggleBtn.addEventListener("click", () => {
+        const expanded = toggleBtn.getAttribute("aria-expanded") === "true";
+        toggleBtn.setAttribute("aria-expanded", String(!expanded));
+        descEl.classList.toggle("hidden", expanded);
+      });
+      dt.appendChild(toggleBtn);
+    } else {
+      dt.textContent = row.label;
+    }
 
     labelWrap.appendChild(dot);
     labelWrap.appendChild(dt);
@@ -936,6 +957,7 @@ function renderMetrics(play) {
     head.appendChild(labelWrap);
     head.appendChild(valWrap);
     item.appendChild(head);
+    if (descEl) item.appendChild(descEl);
     els.metricsList.appendChild(item);
   }
 }
