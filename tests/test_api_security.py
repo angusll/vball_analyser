@@ -176,6 +176,29 @@ def test_end_to_end_local_workflow_range_calibration_hitter_export(tmp_path: Pat
         assert r_dl.headers["X-Content-Type-Options"] == "nosniff"
         assert len(r_dl.content) > 5000
 
+        # Re-run detection requires CSRF and preserves manual calibration
+        r_no_csrf = client.post(f"/api/sessions/{sid}/rerun", json={})
+        assert r_no_csrf.status_code == 403
+
+        r_rerun = client.post(f"/api/sessions/{sid}/rerun", headers={"X-CSRF-Token": csrf}, json={})
+        assert r_rerun.status_code == 200
+        assert r_rerun.json()["status"] == "queued"
+        assert r_rerun.json()["calibration"]["is_manual"] is True
+
+        rerun_ready = None
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            r = client.get(f"/api/sessions/{sid}")
+            assert r.status_code == 200
+            rerun_ready = r.json()
+            if rerun_ready["status"] in ("ready", "error"):
+                break
+            time.sleep(0.25)
+        assert rerun_ready is not None
+        assert rerun_ready["status"] == "ready"
+        assert rerun_ready["calibration"]["is_manual"] is True
+        assert len(rerun_ready["plays"]) >= 1
+
 
 def test_static_frontend_and_backend_security_hygiene() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")

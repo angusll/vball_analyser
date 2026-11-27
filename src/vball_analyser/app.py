@@ -144,6 +144,7 @@ def _set_session_cookie(response: Response, cookie_val: str, ttl_seconds: int) -
 def create_app(
     config: AppConfig = DEFAULT_CONFIG,
     predictor: FramePredictor | None = None,
+    warmup_on_startup: bool | None = None,
 ) -> FastAPI:
     """Create configured FastAPI app with security middleware and GPU worker state."""
     secret_key = resolve_secret_key(config.secret_file)
@@ -159,9 +160,26 @@ def create_app(
     )
     active_tasks: set[asyncio.Task[None]] = set()
     gpu_lock = asyncio.Lock()
+    should_warmup = warmup_on_startup if warmup_on_startup is not None else (predictor is None)
+
+    async def _run_startup_warmup() -> None:
+        warmup_fn = getattr(active_predictor, "warmup", None)
+        if not callable(warmup_fn):
+            return
+        try:
+            async with gpu_lock:
+                await asyncio.to_thread(warmup_fn)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Startup model warmup failed; models will load on first analysis.", exc_info=True)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if should_warmup:
+            task = asyncio.create_task(_run_startup_warmup())
+            active_tasks.add(task)
+            task.add_done_callback(active_tasks.discard)
         yield
         for task in list(active_tasks):
             task.cancel()
@@ -527,6 +545,36 @@ def create_app(
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Session not found.") from exc
         return JSONResponse(updated.model_dump())
+
+    @app.post("/api/sessions/{session_id}/rerun")
+    async def rerun_session_detection(session_id: str, request: Request) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            session = store.load_session(session_id)
+            video_path = store.resolve_web_video_path(session_id)
+            sdir = store.session_dir(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Session or video not found.") from exc
+
+        if session.status in {"queued", "scanning", "analysing"}:
+            raise HTTPException(status_code=409, detail="Session analysis is already in progress.")
+
+        for cache_file in sdir.glob("ball_cache_*.json"):
+            cache_file.unlink(missing_ok=True)
+        thumbs_dir = sdir / "thumbnails"
+        if thumbs_dir.is_dir():
+            for thumb in thumbs_dir.glob("*.jpg"):
+                thumb.unlink(missing_ok=True)
+
+        session.plays = []
+        session.status = "queued"
+        session.progress_pct = 0.0
+        session.error_message = None
+        store.save_session(session)
+        _schedule_analysis(session_id, video_path)
+        return JSONResponse(session.model_dump())
 
     @app.post("/api/sessions/{session_id}/plays/add")
     async def add_play(session_id: str, request: Request, body: AddPlayRequest) -> JSONResponse:

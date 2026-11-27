@@ -8,7 +8,7 @@ import random
 import numpy as np
 from scipy.optimize import least_squares
 
-from vball_analyser.calibration import height_above_tape, tape_y_at
+from vball_analyser.calibration import height_above_tape, net_span_px, tape_y_at
 from vball_analyser.models import BallDetection, NetCalibration, Point2D, SetTrajectory
 
 _MIN_GRAVITY_PX_S2 = 120.0
@@ -16,6 +16,8 @@ _MAX_GRAVITY_PX_S2 = 5000.0
 _INLIER_DIST_PX = 18.0
 _DEFLECTION_DIST_PX = 24.0
 _MAX_INTERP_GAP_FRAMES = 6
+_MIN_BALL_CONF = 0.12
+_MIN_SET_HORIZ_SPAN_PX = 30.0
 
 
 def _dedupe_per_frame(detections: list[BallDetection]) -> list[BallDetection]:
@@ -45,7 +47,13 @@ def _filter_static_cart_balls(detections: list[BallDetection]) -> list[BallDetec
     return filtered if len(filtered) >= 4 else detections
 
 
-def _solve_triplet(d0: BallDetection, d1: BallDetection, d2: BallDetection) -> tuple[float, float, float, float, float, float] | None:
+def _solve_triplet(
+    d0: BallDetection,
+    d1: BallDetection,
+    d2: BallDetection,
+    min_g: float = _MIN_GRAVITY_PX_S2,
+    max_g: float = _MAX_GRAVITY_PX_S2,
+) -> tuple[float, float, float, float, float, float] | None:
     """Solve linear x(tau) and quadratic y(tau) anchored at t0 = d0.timestamp_s."""
     t0 = d0.timestamp_s
     tau1 = d1.timestamp_s - t0
@@ -72,11 +80,34 @@ def _solve_triplet(d0: BallDetection, d1: BallDetection, d2: BallDetection) -> t
     except np.linalg.LinAlgError:
         return None
 
-    if not (_MIN_GRAVITY_PX_S2 <= g <= _MAX_GRAVITY_PX_S2):
+    if not (min_g <= g <= max_g):
         return None
     if abs(bx) * tau2 < 25.0:
         return None
     return float(t0), float(ax), float(bx), float(ay), float(by), float(g)
+
+
+def _count_distinct_positions(inliers: list[BallDetection], min_move_px: float = 2.0) -> int:
+    """Count temporally ordered inliers that represent distinct ball positions (not VFR duplicates)."""
+    if not inliers:
+        return 0
+    count = 1
+    last_x, last_y = inliers[0].x, inliers[0].y
+    for det in inliers[1:]:
+        if math.hypot(det.x - last_x, det.y - last_y) >= min_move_px:
+            count += 1
+            last_x, last_y = det.x, det.y
+    return count
+
+
+def _trim_isolated_endpoints(inliers: list[BallDetection], max_gap_s: float = 0.18) -> list[BallDetection]:
+    """Drop lone single-point islands separated from the main arc by a large time gap."""
+    trimmed = list(inliers)
+    while len(trimmed) >= 4 and (trimmed[1].timestamp_s - trimmed[0].timestamp_s) > max_gap_s:
+        trimmed.pop(0)
+    while len(trimmed) >= 4 and (trimmed[-1].timestamp_s - trimmed[-2].timestamp_s) > max_gap_s:
+        trimmed.pop()
+    return trimmed
 
 
 def _eval_parabola(params: tuple[float, float, float, float, float, float], ts: float) -> tuple[float, float]:
@@ -104,10 +135,20 @@ def fit_setting_path(
     if fps <= 0:
         fps = 30.0
 
-    # Keep all detections per frame for multi-ball RANSAC, filter static cart balls
-    cleaned = _filter_static_cart_balls(detections)
+    # Filter motion-damped static false positives (conf < 0.12) and static cart balls
+    conf_filtered = [d for d in detections if d.conf >= _MIN_BALL_CONF]
+    active_dets = conf_filtered if len({d.frame_idx for d in conf_filtered}) >= 4 else detections
+    cleaned = _filter_static_cart_balls(active_dets)
     if len({d.frame_idx for d in cleaned}) < 4:
         return None
+
+    span = net_span_px(calibration)
+    if span >= 150.0:
+        g_ref = 9.81 * (span / 9.0)
+        min_g = max(_MIN_GRAVITY_PX_S2, 0.30 * g_ref)
+        max_g = min(_MAX_GRAVITY_PX_S2, 2.8 * g_ref)
+    else:
+        min_g, max_g = _MIN_GRAVITY_PX_S2, _MAX_GRAVITY_PX_S2
 
     by_frame: dict[int, list[BallDetection]] = {}
     for det in cleaned:
@@ -156,13 +197,13 @@ def fit_setting_path(
     best_params: tuple[float, float, float, float, float, float] | None = None
 
     for d0, d1, d2 in triplets:
-        params = _solve_triplet(d0, d1, d2)
+        params = _solve_triplet(d0, d1, d2, min_g=min_g, max_g=max_g)
         if params is None:
             continue
 
-        # Check peak occurs above net region (y smaller than tape + 50px)
+        # Check peak occurs above net top tape (allowing minor 12px tape-estimate slack)
         t_apex, peak_x, peak_y = _peak_of_parabola(params, d0.timestamp_s, d2.timestamp_s + 0.6)
-        if peak_y >= min(frame_height * 0.78, tape_y_at(calibration, peak_x) + 50.0):
+        if peak_y >= min(frame_height * 0.78, tape_y_at(calibration, peak_x) + 12.0):
             continue
 
         # Collect inliers chronologically, stopping when trajectory sharply deflects post-peak
@@ -183,16 +224,28 @@ def fit_setting_path(
             if err <= _INLIER_DIST_PX:
                 inliers.append(best_d)
                 diverged_streak = 0
-            elif past_peak and len(inliers) >= 4 and _DEFLECTION_DIST_PX < err < 140.0:
+            elif (
+                past_peak
+                and len(inliers) >= 4
+                and _DEFLECTION_DIST_PX < err < 140.0
+                and math.hypot(best_d.x - inliers[-1].x, best_d.y - inliers[-1].y) >= 3.0
+            ):
                 diverged_streak += 1
                 if diverged_streak >= 2:
                     break
 
+        inliers = _trim_isolated_endpoints(inliers)
         if len(inliers) < 4:
             continue
 
         span_s = inliers[-1].timestamp_s - inliers[0].timestamp_s
         if span_s < 0.25:
+            continue
+        horiz_span = abs(inliers[-1].x - inliers[0].x)
+        if horiz_span < _MIN_SET_HORIZ_SPAN_PX:
+            continue
+        distinct_count = _count_distinct_positions(inliers)
+        if distinct_count < 4:
             continue
 
         # Strongly prefer arcs whose descending branch ends at a jumping attacker's hand
@@ -213,7 +266,7 @@ def fit_setting_path(
                             best_cand_score = c_score
             contact_bonus = best_cand_score
 
-        score = len(inliers) * 10.0 + span_s * 3.0 + contact_bonus
+        score = distinct_count * 10.0 + span_s * 3.0 + contact_bonus
         if score > best_score:
             best_score = score
             best_inliers = inliers
@@ -228,9 +281,19 @@ def fit_setting_path(
     xs_obs = np.array([d.x for d in best_inliers], dtype=np.float64)
     ys_obs = np.array([d.y for d in best_inliers], dtype=np.float64)
     _, ax0, bx0, ay0, by0, g0 = best_params
-    x_init = np.array([ax0, bx0, ay0 + by0 * (t0 - best_params[0]) + 0.5 * g0 * (t0 - best_params[0]) ** 2, by0 + g0 * (t0 - best_params[0]), g0], dtype=np.float64)
+    dt0 = t0 - best_params[0]
+    x_init = np.array(
+        [
+            ax0 + bx0 * dt0,
+            bx0,
+            ay0 + by0 * dt0 + 0.5 * g0 * dt0 * dt0,
+            by0 + g0 * dt0,
+            g0,
+        ],
+        dtype=np.float64,
+    )
     # Clamp initial guess inside bounds
-    x_init[4] = float(np.clip(x_init[4], _MIN_GRAVITY_PX_S2 + 1.0, _MAX_GRAVITY_PX_S2 - 1.0))
+    x_init[4] = float(np.clip(x_init[4], min_g + 1.0, max_g - 1.0))
 
     def residuals(p: np.ndarray) -> np.ndarray:
         ax, bx, ay, by, g = p
@@ -242,8 +305,8 @@ def fit_setting_path(
         residuals,
         x_init,
         bounds=(
-            [-np.inf, -np.inf, -np.inf, -np.inf, _MIN_GRAVITY_PX_S2],
-            [np.inf, np.inf, np.inf, np.inf, _MAX_GRAVITY_PX_S2],
+            [-np.inf, -np.inf, -np.inf, -np.inf, min_g],
+            [np.inf, np.inf, np.inf, np.inf, max_g],
         ),
         loss="huber",
         f_scale=8.0,
@@ -268,21 +331,38 @@ def fit_setting_path(
             final_inliers.append(best_d)
             final_errs.append(err)
             diverged_streak = 0
-        elif ts >= t_apex_ref and len(final_inliers) >= 4 and _DEFLECTION_DIST_PX < err < 140.0:
+        elif (
+            ts >= t_apex_ref
+            and len(final_inliers) >= 4
+            and _DEFLECTION_DIST_PX < err < 140.0
+            and math.hypot(best_d.x - final_inliers[-1].x, best_d.y - final_inliers[-1].y) >= 3.0
+        ):
             diverged_streak += 1
             if diverged_streak >= 2:
                 deflected = True
                 break
 
     if deflected:
-        # Trim trailing frames where spike deflection already began accelerating away from the arc
+        # Trim at most 2 trailing frames if they sharply diverge from the arc
+        # (e.g. first post-contact spike frame barely inside _INLIER_DIST_PX),
+        # without chewing back into normal VFR jitter or a frame matching a hitter contact.
+        trimmed_count = 0
         while (
-            len(final_inliers) > 4
+            trimmed_count < 2
+            and len(final_inliers) > 4
             and final_inliers[-1].timestamp_s >= t_apex_ref
-            and (final_errs[-1] > 5.5 or (final_errs[-1] > 3.5 and final_errs[-1] > final_errs[-2] * 1.4))
+            and final_errs[-1] > 12.0
+            and final_errs[-1] > final_errs[-2] * 1.8
         ):
+            last_det = final_inliers[-1]
+            if candidate_contact_frames and any(
+                abs(cf - last_det.frame_idx) <= 1 and math.hypot(cp.x - last_det.x, cp.y - last_det.y) < 55.0
+                for cf, cp in candidate_contact_frames
+            ):
+                break
             final_inliers.pop()
             final_errs.pop()
+            trimmed_count += 1
 
     if len(final_inliers) < 4:
         final_inliers = best_inliers
@@ -295,7 +375,7 @@ def fit_setting_path(
         best_snap: int | None = None
         best_snap_dist = 85.0
         peak_f_ref = int(round(t_apex_ref * fps))
-        max_forward = 1 if deflected else max(2, int(round(0.32 * fps)))
+        max_forward = max(3, int(round(0.12 * fps))) if deflected else max(2, int(round(0.32 * fps)))
         for cand_frame, cand_pt in candidate_contact_frames:
             if max(release_frame + 4, peak_f_ref, contact_frame - 3) <= cand_frame <= contact_frame + max_forward:
                 px, py = _eval_parabola(refined, cand_frame / fps)
@@ -312,25 +392,23 @@ def fit_setting_path(
     peak_frame = max(release_frame, min(contact_frame, int(round(t_peak * fps))))
     peak_height_px, peak_height_cm = height_above_tape(calibration, peak_x, peak_y)
 
-    # Build smooth frame-by-frame arc points across [release_frame, contact_frame]
+    # Build smooth frame-by-frame arc points evaluated on the refined physical parabola
     inlier_map = {d.frame_idx: d for d in final_inliers}
     arc_points: list[BallDetection] = []
     for f_idx in range(release_frame, contact_frame + 1):
-        if f_idx in inlier_map:
-            arc_points.append(inlier_map[f_idx])
-        else:
-            ts = f_idx / fps
-            px, py = _eval_parabola(refined, ts)
-            arc_points.append(
-                BallDetection(
-                    frame_idx=f_idx,
-                    timestamp_s=round(ts, 4),
-                    x=round(px, 2),
-                    y=round(py, 2),
-                    conf=0.5,
-                    is_interpolated=True,
-                )
+        ts = f_idx / fps
+        px, py = _eval_parabola(refined, ts)
+        obs = inlier_map.get(f_idx)
+        arc_points.append(
+            BallDetection(
+                frame_idx=f_idx,
+                timestamp_s=round(ts, 4),
+                x=round(px, 2),
+                y=round(py, 2),
+                conf=obs.conf if obs is not None else 0.5,
+                is_interpolated=obs is None,
             )
+        )
 
     return SetTrajectory(
         release_frame=release_frame,

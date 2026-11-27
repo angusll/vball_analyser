@@ -16,6 +16,7 @@ class NetCalibration(BaseModel):
     left_point: Point2D
     right_point: Point2D
     net_height_m: float = 2.43
+    net_band_px: float | None = None
     is_manual: bool = False
 
 
