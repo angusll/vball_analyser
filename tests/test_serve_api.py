@@ -250,3 +250,121 @@ def test_duplicate_auto_detect_returns_409(tmp_path: Path) -> None:
 
         dup = client.post(f"/api/serve-sessions/{sid}/auto-detect", json={"server_name": "#7"}, headers=hdr)
         assert dup.status_code == 409
+
+
+def test_receive_quality_api_endpoints_and_server_filter(tmp_path: Path) -> None:
+    client, _ = _make_client(tmp_path)
+    with client:
+        csrf = client.get("/api/csrf").json()["csrf_token"]
+        hdr = {"X-CSRF-Token": csrf}
+
+        # Create session returns empty receive_summary and default setter_target
+        c_res = client.post("/api/serve-sessions", json={"name": "Receive API Test"}, headers=hdr)
+        assert c_res.status_code == 200
+        c_body = c_res.json()
+        sid = c_body["session"]["serve_session_id"]
+        assert c_body["session"]["setter_target"] == {"x": 6.0, "y": 0.8}
+        assert c_body["receive_summary"]["scored_count"] == 0
+        assert c_body["receive_summary"]["avg_rating"] == 0.0
+
+        # CSRF enforced on update / add / serve update
+        assert client.post(f"/api/serve-sessions/{sid}/update", json={"setter_target": {"x": 5.0, "y": 1.0}}).status_code == 403
+        assert client.post(f"/api/serve-sessions/{sid}/serves", json={"x_m": 4.5, "y_m": 6.5}).status_code == 403
+
+        # Chart a pass for #7 received by P1 near setter target -> score 3
+        a1 = client.post(
+            f"/api/serve-sessions/{sid}/serves",
+            json={
+                "x_m": 2.0,
+                "y_m": 6.5,
+                "result": "in",
+                "server_name": "#7",
+                "passer_label": "P1",
+                "pass_x_m": 6.1,
+                "pass_y_m": 1.0,
+            },
+            headers=hdr,
+        )
+        assert a1.status_code == 200
+        s1_id = a1.json()["session"]["serves"][0]["serve_id"]
+        assert a1.json()["session"]["serves"][0]["receive_score"] == 3
+        assert a1.json()["receive_summary"]["scored_count"] == 1
+        assert a1.json()["receive_summary"]["avg_rating"] == 3.0
+        assert a1.json()["receive_summary"]["perfect_pct"] == 100.0
+        assert a1.json()["receive_summary"]["by_passer"][0]["passer_label"] == "P1"
+
+        # Chart an ace for #9 -> score 0
+        a2 = client.post(
+            f"/api/serve-sessions/{sid}/serves",
+            json={"x_m": 7.5, "y_m": 7.5, "result": "ace", "server_name": "#9", "passer_label": "P3"},
+            headers=hdr,
+        )
+        assert a2.status_code == 200
+        assert a2.json()["receive_summary"]["scored_count"] == 2
+        assert a2.json()["receive_summary"]["avg_rating"] == 1.5
+        assert a2.json()["receive_summary"]["in_system_pct"] == 50.0
+
+        # Server-filtered GET returns only #7's receive_summary
+        g_filt = client.get(f"/api/serve-sessions/{sid}?server=%237")
+        assert g_filt.status_code == 200
+        assert g_filt.json()["receive_summary"]["scored_count"] == 1
+        assert g_filt.json()["receive_summary"]["avg_rating"] == 3.0
+
+        # Manual score override on s1 -> score 1, receive_score_manual=True
+        u1 = client.post(
+            f"/api/serve-sessions/{sid}/serves/{s1_id}/update?server=%237",
+            json={"receive_score": 1},
+            headers=hdr,
+        )
+        assert u1.status_code == 200
+        assert u1.json()["session"]["serves"][0]["receive_score"] == 1
+        assert u1.json()["session"]["serves"][0]["receive_score_manual"] is True
+        assert u1.json()["receive_summary"]["avg_rating"] == 1.0
+
+        # Clear manual score override -> reverts to auto score 3
+        u2 = client.post(
+            f"/api/serve-sessions/{sid}/serves/{s1_id}/update",
+            json={"clear_receive_score": True},
+            headers=hdr,
+        )
+        assert u2.status_code == 200
+        assert u2.json()["session"]["serves"][0]["receive_score"] == 3
+        assert u2.json()["session"]["serves"][0]["receive_score_manual"] is False
+
+        # Move setter_target via /update -> clamps and recomputes s1 score to 0
+        upd_sess = client.post(
+            f"/api/serve-sessions/{sid}/update",
+            json={"setter_target": {"x": 0.2, "y": 0.1}},
+            headers=hdr,
+        )
+        assert upd_sess.status_code == 200
+        assert upd_sess.json()["session"]["setter_target"] == {"x": 0.5, "y": 0.2}
+        assert upd_sess.json()["session"]["serves"][0]["receive_score"] == 0
+        assert upd_sess.json()["receive_summary"]["avg_rating"] == 0.0
+
+        # Move pass destination near new setter_target (0.5, 0.2) and clear passer_label
+        u3 = client.post(
+            f"/api/serve-sessions/{sid}/serves/{s1_id}/update",
+            json={"pass_x_m": 0.8, "pass_y_m": 0.5, "clear_passer_label": True},
+            headers=hdr,
+        )
+        assert u3.status_code == 200
+        assert u3.json()["session"]["serves"][0]["receive_score"] == 3
+        assert u3.json()["session"]["serves"][0]["passer_label"] is None
+
+        # Clear pass removes pass coords & score for "in" serve
+        u4 = client.post(
+            f"/api/serve-sessions/{sid}/serves/{s1_id}/update",
+            json={"clear_pass": True},
+            headers=hdr,
+        )
+        assert u4.status_code == 200
+        assert u4.json()["session"]["serves"][0]["pass_x_m"] is None
+        assert u4.json()["session"]["serves"][0]["receive_score"] is None
+        assert u4.json()["receive_summary"]["scored_count"] == 1  # only the ace remains scored
+
+        # Delete returns updated receive_summary
+        d1 = client.post(f"/api/serve-sessions/{sid}/serves/{s1_id}/delete", headers=hdr)
+        assert d1.status_code == 200
+        assert "receive_summary" in d1.json()
+        assert d1.json()["receive_summary"]["scored_count"] == 1

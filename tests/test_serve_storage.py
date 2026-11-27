@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -111,3 +112,203 @@ def test_replace_auto_serves_preserves_manual_and_edited_auto(tmp_path: Path) ->
     assert "auto_new_1" in ids
     assert len(sess.serves) == 3  # original manual + edited auto + 1 fresh auto
     assert [s.index for s in sess.serves] == [1, 2, 3]
+
+
+def test_load_legacy_serve_session_json_without_receive_fields(tmp_path: Path) -> None:
+    store = ServeSessionStore(tmp_path / "serve_sessions")
+    legacy_dir = tmp_path / "serve_sessions" / "srv_legacy01"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_payload = {
+        "serve_session_id": "srv_legacy01",
+        "name": "Legacy Practice",
+        "created_at": "2026-01-15T10:00:00+00:00",
+        "status": "ready",
+        "progress_pct": 100.0,
+        "default_passers": [{"label": "P1", "x_m": 1.8, "y_m": 6.2}],
+        "servers": ["#4"],
+        "serves": [
+            {
+                "serve_id": "s_old01",
+                "index": 1,
+                "source": "manual",
+                "server_name": "#4",
+                "x_m": 4.5,
+                "y_m": 6.5,
+                "result": "in",
+                "zone": "Zone 6",
+                "depth": "deep",
+                "is_seam": False,
+            }
+        ],
+    }
+    (legacy_dir / "serve_session.json").write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    loaded = store.load_session("srv_legacy01")
+    assert loaded.setter_target == Point2D(x=6.0, y=0.8)
+    assert len(loaded.serves) == 1
+    ev = loaded.serves[0]
+    assert ev.passer_label is None
+    assert ev.pass_x_m is None
+    assert ev.pass_y_m is None
+    assert ev.pass_distance_m is None
+    assert ev.receive_score is None
+    assert ev.receive_score_manual is False
+
+
+def test_add_serve_receive_invariants_and_setter_target_recomputation(tmp_path: Path) -> None:
+    store = ServeSessionStore(tmp_path / "serve_sessions")
+    sess = store.create_session("Receive Quality Storage")
+
+    # 1) "in" serve with pass coords near default target (6.0, 0.8) -> auto score 3
+    sess = store.add_serve(
+        sess.serve_session_id,
+        x_m=2.0,
+        y_m=6.5,
+        result="in",
+        passer_label="  P1  ",
+        pass_x_m=6.2,
+        pass_y_m=1.0,
+    )
+    s_auto = sess.serves[0]
+    assert s_auto.passer_label == "P1"
+    assert s_auto.pass_x_m == 6.2
+    assert s_auto.pass_y_m == 1.0
+    assert s_auto.receive_score == 3
+    assert s_auto.receive_score_manual is False
+    assert s_auto.pass_distance_m is not None and s_auto.pass_distance_m < 1.5
+
+    # 2) "in" serve with pass coords AND explicit override score != auto_score -> manual override
+    sess = store.add_serve(
+        sess.serve_session_id,
+        x_m=4.5,
+        y_m=6.5,
+        result="in",
+        passer_label="P2",
+        pass_x_m=6.1,
+        pass_y_m=0.9,
+        receive_score=1,
+    )
+    s_manual_override = sess.serves[1]
+    assert s_manual_override.receive_score == 1
+    assert s_manual_override.receive_score_manual is True
+
+    # 3) "in" serve with score only (no pass coords) -> manual override
+    sess = store.add_serve(
+        sess.serve_session_id,
+        x_m=7.0,
+        y_m=6.5,
+        result="in",
+        receive_score=2,
+    )
+    assert sess.serves[2].pass_x_m is None
+    assert sess.serves[2].receive_score == 2
+    assert sess.serves[2].receive_score_manual is True
+
+    # 4) "ace" serve ignores pass coords and forces score=0, manual=False
+    sess = store.add_serve(
+        sess.serve_session_id,
+        x_m=7.5,
+        y_m=7.5,
+        result="ace",
+        pass_x_m=6.0,
+        pass_y_m=0.8,
+        receive_score=3,
+    )
+    assert sess.serves[3].pass_x_m is None
+    assert sess.serves[3].pass_y_m is None
+    assert sess.serves[3].pass_distance_m is None
+    assert sess.serves[3].receive_score == 0
+    assert sess.serves[3].receive_score_manual is False
+
+    # 5) "out" and "net" serves clear pass coords and have receive_score=None
+    sess = store.add_serve(
+        sess.serve_session_id,
+        x_m=9.5,
+        y_m=6.0,
+        result="in",
+        pass_x_m=6.0,
+        pass_y_m=0.8,
+        receive_score=3,
+    )
+    assert sess.serves[4].result == "out"
+    assert sess.serves[4].pass_x_m is None
+    assert sess.serves[4].receive_score is None
+
+    sess = store.add_serve(
+        sess.serve_session_id,
+        x_m=4.5,
+        y_m=1.0,
+        result="net",
+        pass_x_m=6.0,
+        pass_y_m=0.8,
+        receive_score=3,
+    )
+    assert sess.serves[5].result == "net"
+    assert sess.serves[5].pass_x_m is None
+    assert sess.serves[5].receive_score is None
+
+    # Moving setter_target far left (and clamping x=0.1 -> 0.5, y=0.05 -> 0.2) recomputes s_auto
+    # but preserves s_manual_override's manual score and ace's 0
+    sess = store.update_session(sess.serve_session_id, setter_target=Point2D(x=0.1, y=0.05))
+    assert sess.setter_target == Point2D(x=0.5, y=0.2)
+    assert sess.serves[0].receive_score == 0  # (6.2, 1.0) is > 4.8m from (0.5, 0.2)
+    assert sess.serves[0].pass_distance_m is not None and sess.serves[0].pass_distance_m > 4.8
+    assert sess.serves[1].receive_score == 1  # manual override preserved
+    assert sess.serves[1].receive_score_manual is True
+    assert sess.serves[3].receive_score == 0  # ace unchanged
+
+
+def test_update_serve_receive_edits_and_source_flip(tmp_path: Path) -> None:
+    store = ServeSessionStore(tmp_path / "serve_sessions")
+    sess = store.create_session("Update Receive Test")
+    sess = store.add_serve(
+        sess.serve_session_id,
+        x_m=4.5,
+        y_m=6.5,
+        result="in",
+        source="auto",
+        timestamp_s=3.2,
+        passer_label="P2",
+        pass_x_m=6.0,
+        pass_y_m=1.0,
+    )
+    sid = sess.serve_session_id
+    ev_id = sess.serves[0].serve_id
+    assert sess.serves[0].source == "auto"
+    assert sess.serves[0].receive_score == 3
+
+    # Manual score override flips source to manual and sets receive_score_manual=True
+    sess = store.update_serve(sid, ev_id, receive_score=1)
+    assert sess.serves[0].receive_score == 1
+    assert sess.serves[0].receive_score_manual is True
+    assert sess.serves[0].source == "manual"
+
+    # Clearing manual override (receive_score=None) recomputes auto score from pass coords
+    sess = store.update_serve(sid, ev_id, receive_score=None)
+    assert sess.serves[0].receive_score == 3
+    assert sess.serves[0].receive_score_manual is False
+
+    # Moving pass coords recomputes score (yellow ring: ~2.2m away -> score 2)
+    sess = store.update_serve(sid, ev_id, pass_x_m=6.0, pass_y_m=3.0)
+    assert sess.serves[0].pass_x_m == 6.0
+    assert sess.serves[0].pass_y_m == 3.0
+    assert sess.serves[0].receive_score == 2
+    assert sess.serves[0].receive_score_manual is False
+
+    # Updating passer_label & clearing pass
+    sess = store.update_serve(sid, ev_id, passer_label="P3", clear_pass=True)
+    assert sess.serves[0].passer_label == "P3"
+    assert sess.serves[0].pass_x_m is None
+    assert sess.serves[0].pass_y_m is None
+    assert sess.serves[0].pass_distance_m is None
+    assert sess.serves[0].receive_score is None
+    assert sess.serves[0].receive_score_manual is False
+
+    # Changing result to ace sets receive_score=0; changing to net clears receive_score=None
+    sess = store.update_serve(sid, ev_id, pass_x_m=6.0, pass_y_m=0.8)
+    assert sess.serves[0].receive_score == 3
+    sess = store.update_serve(sid, ev_id, result="ace")
+    assert sess.serves[0].pass_x_m is None
+    assert sess.serves[0].receive_score == 0
+    sess = store.update_serve(sid, ev_id, result="net")
+    assert sess.serves[0].receive_score is None

@@ -38,7 +38,11 @@ from vball_analyser.security import (
     validate_local_video_path,
 )
 from vball_analyser.serve_detector import detect_serve_events
-from vball_analyser.serve_geometry import compute_distribution_summary, interpolate_court_from_net
+from vball_analyser.serve_geometry import (
+    compute_distribution_summary,
+    compute_receive_summary,
+    interpolate_court_from_net,
+)
 from vball_analyser.serve_storage import ServeSessionStore
 from vball_analyser.storage import SessionStore, validate_safe_id
 from vball_analyser.video_io import (
@@ -69,6 +73,7 @@ class UpdateServeSessionRequest(BaseModel):
     clear_video_session: bool = False
     servers: list[str] | None = None
     default_passers: list[PasserPosition] | None = None
+    setter_target: Point2D | None = None
 
 
 class CourtCalibrationRequest(BaseModel):
@@ -98,6 +103,10 @@ class AddServeRequest(BaseModel):
     timestamp_s: float | None = Field(default=None, ge=0.0)
     frame_idx: int | None = Field(default=None, ge=0)
     passers_snapshot: list[PasserPosition] | None = None
+    passer_label: str | None = Field(default=None, max_length=24)
+    pass_x_m: float | None = Field(default=None, ge=-3.0, le=12.0)
+    pass_y_m: float | None = Field(default=None, ge=-2.0, le=13.0)
+    receive_score: Literal[0, 1, 2, 3] | None = None
 
 
 class UpdateServeRequest(BaseModel):
@@ -106,6 +115,13 @@ class UpdateServeRequest(BaseModel):
     result: Literal["in", "ace", "out", "net"] | None = None
     server_name: str | None = Field(default=None, max_length=32)
     passers_snapshot: list[PasserPosition] | None = None
+    passer_label: str | None = Field(default=None, max_length=24)
+    clear_passer_label: bool = False
+    pass_x_m: float | None = Field(default=None, ge=-3.0, le=12.0)
+    pass_y_m: float | None = Field(default=None, ge=-2.0, le=13.0)
+    receive_score: Literal[0, 1, 2, 3] | None = None
+    clear_receive_score: bool = False
+    clear_pass: bool = False
 
 
 class CalibrationRequest(BaseModel):
@@ -662,6 +678,7 @@ def create_app(
         return {
             "session": session.model_dump(),
             "summary": compute_distribution_summary(session.serves, server_filter=server_filter).model_dump(),
+            "receive_summary": compute_receive_summary(session.serves, server_filter=server_filter).model_dump(),
         }
 
     async def _run_serve_auto_detect(serve_session_id: str, server_name: str) -> None:
@@ -685,6 +702,7 @@ def create_app(
                     active_predictor,
                     video_sess.metadata,
                     server_name,
+                    setter_target=serve_sess.setter_target,
                 )
 
             updated = serve_store.replace_auto_serves(serve_session_id, detected)
@@ -744,6 +762,7 @@ def create_app(
                 "name": body.name,
                 "servers": body.servers,
                 "default_passers": body.default_passers,
+                "setter_target": body.setter_target,
             }
             if body.clear_video_session:
                 kwargs["video_session_id"] = None
@@ -878,6 +897,10 @@ def create_app(
                 timestamp_s=body.timestamp_s,
                 frame_idx=body.frame_idx,
                 passers_snapshot=body.passers_snapshot,
+                passer_label=body.passer_label,
+                pass_x_m=body.pass_x_m,
+                pass_y_m=body.pass_y_m,
+                receive_score=body.receive_score,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -895,15 +918,25 @@ def create_app(
     ) -> JSONResponse:
         _require_csrf(request)
         try:
-            sess = serve_store.update_serve(
-                serve_session_id,
-                serve_id,
-                x_m=body.x_m,
-                y_m=body.y_m,
-                result=body.result,
-                server_name=body.server_name,
-                passers_snapshot=body.passers_snapshot,
-            )
+            kwargs: dict = {
+                "x_m": body.x_m,
+                "y_m": body.y_m,
+                "result": body.result,
+                "server_name": body.server_name,
+                "passers_snapshot": body.passers_snapshot,
+                "pass_x_m": body.pass_x_m,
+                "pass_y_m": body.pass_y_m,
+                "clear_pass": body.clear_pass,
+            }
+            if body.clear_passer_label:
+                kwargs["passer_label"] = None
+            elif body.passer_label is not None:
+                kwargs["passer_label"] = body.passer_label
+            if body.clear_receive_score:
+                kwargs["receive_score"] = None
+            elif body.receive_score is not None:
+                kwargs["receive_score"] = body.receive_score
+            sess = serve_store.update_serve(serve_session_id, serve_id, **kwargs)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
