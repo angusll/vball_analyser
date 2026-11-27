@@ -374,25 +374,25 @@ function drawTopLeftMechanicsHud(ctx, play) {
   const y = Math.max(10, Math.round(r.oy) + 12);
 
   ctx.save();
-  ctx.fillStyle = "rgba(9, 13, 22, 0.86)";
-  ctx.strokeStyle = "rgba(56, 189, 248, 0.45)";
-  ctx.lineWidth = 1.2;
+  ctx.fillStyle = "rgba(14, 16, 20, 0.88)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.16)";
+  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.roundRect(x, y, boxW, boxH, 9);
+  ctx.roundRect(x, y, boxW, boxH, 7);
   ctx.fill();
   ctx.stroke();
 
-  ctx.font = "700 10.5px system-ui, sans-serif";
-  ctx.fillStyle = "#38bdf8";
+  ctx.font = "600 10.5px system-ui, sans-serif";
+  ctx.fillStyle = "#f3f4f6";
   ctx.textAlign = "left";
-  ctx.fillText(`PLAY #${play.index} MECHANICS`, x + padX, y + padY + 10);
+  ctx.fillText(`PLAY #${play.index}`, x + padX, y + padY + 10);
 
-  ctx.font = "600 10px ui-monospace, monospace";
-  ctx.fillStyle = "#94a3b8";
+  ctx.font = "500 10px ui-monospace, monospace";
+  ctx.fillStyle = "#848b98";
   ctx.textAlign = "right";
   ctx.fillText(play.attack_zone, x + boxW - padX, y + padY + 10);
 
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.22)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(x + padX, y + padY + headerH - 4);
@@ -428,14 +428,14 @@ function drawBadge(ctx, text, x, y, borderCol) {
   const h = 22;
   const bx = Math.max(6, Math.min(els.canvas.clientWidth - w - 6, x));
   const by = Math.max(24, Math.min(els.canvas.clientHeight - 6, y));
-  ctx.fillStyle = "rgba(9, 13, 22, 0.9)";
+  ctx.fillStyle = "rgba(14, 16, 20, 0.9)";
   ctx.strokeStyle = borderCol;
   ctx.lineWidth = 1.25;
   ctx.beginPath();
   ctx.roundRect(bx, by - h, w, h, 5);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "#f8fafc";
+  ctx.fillStyle = "#f3f4f6";
   ctx.textAlign = "left";
   ctx.fillText(text, bx + padX, by - 7);
   ctx.restore();
@@ -879,7 +879,7 @@ function renderMetrics(play) {
   const rows = getPlayMechanicsRows(play);
   if (!rows.length) {
     const item = document.createElement("div");
-    item.className = "metric-item accent-cyan";
+    item.className = "metric-item";
     const head = document.createElement("div");
     head.className = "metric-head";
     const dt = document.createElement("dt");
@@ -898,13 +898,24 @@ function renderMetrics(play) {
   for (const row of rows) {
     const item = document.createElement("div");
     item.className = `metric-item ${row.accentClass}`;
+    if (row.desc) item.title = row.desc;
 
     const head = document.createElement("div");
     head.className = "metric-head";
 
+    const labelWrap = document.createElement("div");
+    labelWrap.className = "metric-label-wrap";
+
+    const dot = document.createElement("span");
+    dot.className = "metric-dot";
+    dot.setAttribute("aria-hidden", "true");
+
     const dt = document.createElement("dt");
     dt.className = "metric-label";
     dt.textContent = row.label;
+
+    labelWrap.appendChild(dot);
+    labelWrap.appendChild(dt);
 
     const valWrap = document.createElement("div");
     valWrap.className = "metric-val-wrap";
@@ -922,15 +933,9 @@ function renderMetrics(play) {
     dd.textContent = row.value;
     valWrap.appendChild(dd);
 
-    head.appendChild(dt);
+    head.appendChild(labelWrap);
     head.appendChild(valWrap);
-
-    const desc = document.createElement("div");
-    desc.className = "metric-desc";
-    desc.textContent = row.desc;
-
     item.appendChild(head);
-    item.appendChild(desc);
     els.metricsList.appendChild(item);
   }
 }
@@ -1049,7 +1054,7 @@ function selectPlay(playId, seekToStart) {
 function updateStatusPill(sess) {
   els.statusBadge.className = "status-pill";
   if (!sess) {
-    els.statusText.textContent = "No Video Loaded";
+    els.statusText.textContent = "No Video";
     els.analysisProgress.classList.add("hidden");
     els.analysisProgress.value = 0;
     return;
