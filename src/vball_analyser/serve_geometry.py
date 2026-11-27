@@ -11,7 +11,9 @@ import numpy as np
 from vball_analyser.models import (
     CourtCalibration,
     PasserPosition,
+    PasserReceiveSummary,
     Point2D,
+    ReceiveQualitySummary,
     ServeDistributionSummary,
     ServeEvent,
 )
@@ -23,6 +25,13 @@ SHORT_DEEP_SPLIT_M = 4.5
 SEAM_LONGITUDINAL_BAND_M = 2.2
 SEAM_MAX_BODY_RADIUS_M = 0.75
 SEAM_GAP_BODY_FRACTION = 0.30
+
+DEFAULT_SETTER_TARGET = Point2D(x=6.0, y=0.8)
+SETTER_TARGET_X_MIN_M = 0.5
+SETTER_TARGET_X_MAX_M = 8.5
+SETTER_TARGET_Y_MIN_M = 0.2
+SETTER_TARGET_Y_MAX_M = 4.0
+RECEIVE_RING_RADII_M: tuple[float, float, float] = (1.5, 3.2, 4.8)
 
 IN_BOUNDS_ZONES: tuple[str, ...] = (
     "Zone 1",
@@ -382,4 +391,143 @@ def compute_distribution_summary(
         zone_pcts=zone_pcts,
         short_count=short_count,
         deep_count=deep_count,
+    )
+
+
+def clamp_setter_target(target: Point2D) -> Point2D:
+    """Validate and clamp a setter target coordinate to the front-court setter zone."""
+    if not (math.isfinite(target.x) and math.isfinite(target.y)):
+        raise ValueError("Setter target coordinates must be finite numbers.")
+    cx = max(SETTER_TARGET_X_MIN_M, min(SETTER_TARGET_X_MAX_M, float(target.x)))
+    cy = max(SETTER_TARGET_Y_MIN_M, min(SETTER_TARGET_Y_MAX_M, float(target.y)))
+    return Point2D(x=round(cx, 3), y=round(cy, 3))
+
+
+def normalize_receive_ring_radii(
+    radii: tuple[float, float, float] | list[float],
+) -> tuple[float, float, float]:
+    """Validate and clamp concentric receive scoring ring radii (score 3, score 2, score 1) in meters."""
+    if len(radii) != 3:
+        raise ValueError("Receive ring radii must contain exactly 3 values (score 3, 2, 1).")
+    vals = [float(v) for v in radii]
+    if not all(math.isfinite(v) for v in vals):
+        raise ValueError("Receive ring radii must be finite numbers.")
+    r3 = max(0.4, min(4.0, vals[0]))
+    r2 = max(r3 + 0.3, min(6.5, vals[1]))
+    r1 = max(r2 + 0.3, min(8.5, vals[2]))
+    return (round(r3, 2), round(r2, 2), round(r1, 2))
+
+
+def score_receive(
+    pass_x_m: float | None,
+    pass_y_m: float | None,
+    result: Literal["in", "ace", "out", "net"],
+    setter_target: Point2D | None = None,
+    *,
+    ring_radii_m: tuple[float, float, float] | None = None,
+    unplayable: bool = False,
+) -> tuple[float | None, Literal[0, 1, 2, 3] | None]:
+    """Compute (distance_to_setter_m, receive_score) for a serve reception on the 0-3 scale."""
+    if result in ("out", "net"):
+        return None, None
+    if result == "ace":
+        return None, 0
+    if pass_x_m is None or pass_y_m is None:
+        return (None, 0) if unplayable else (None, None)
+
+    px = float(pass_x_m)
+    py = float(pass_y_m)
+    if not (math.isfinite(px) and math.isfinite(py)):
+        raise ValueError("Pass destination coordinates must be finite numbers.")
+
+    target = clamp_setter_target(setter_target) if setter_target is not None else DEFAULT_SETTER_TARGET
+    dist = round(math.hypot(px - target.x, py - target.y), 3)
+
+    if py < 0.0:
+        return dist, 0
+
+    r3, r2, r1 = normalize_receive_ring_radii(ring_radii_m) if ring_radii_m is not None else RECEIVE_RING_RADII_M
+    if dist <= r3:
+        return dist, 3
+    if dist <= r2:
+        return dist, 2
+    if dist <= r1:
+        return dist, 1
+    return dist, 0
+
+
+def _passer_sort_key(label: str) -> tuple[int, int, str]:
+    if label == "Unassigned":
+        return (2, 0, label)
+    if label.startswith("P") and label[1:].isdigit():
+        return (0, int(label[1:]), label)
+    return (1, 0, label)
+
+
+def compute_receive_summary(
+    serves: list[ServeEvent],
+    server_filter: str | None = None,
+) -> ReceiveQualitySummary:
+    """Aggregate team and per-passer receive quality ratings (0-3 scale)."""
+    filtered = (
+        [s for s in serves if s.server_name == server_filter]
+        if server_filter and server_filter != "All"
+        else list(serves)
+    )
+    scored = [s for s in filtered if s.receive_score is not None]
+    score_counts: dict[str, int] = {"0": 0, "1": 0, "2": 0, "3": 0}
+    score_pcts: dict[str, float] = {"0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0}
+    if not scored:
+        return ReceiveQualitySummary(score_counts=score_counts, score_pcts=score_pcts)
+
+    total = len(scored)
+    score_sum = 0
+    in_system = 0
+    perfect = 0
+    passer_buckets: dict[str, list[int]] = {}
+
+    for s in scored:
+        sc = int(s.receive_score)  # type: ignore[arg-type]
+        score_counts[str(sc)] += 1
+        score_sum += sc
+        if sc >= 2:
+            in_system += 1
+        if sc == 3:
+            perfect += 1
+        label = (s.passer_label or "").strip() or "Unassigned"
+        passer_buckets.setdefault(label, []).append(sc)
+
+    for k in ("0", "1", "2", "3"):
+        score_pcts[k] = round(100.0 * score_counts[k] / total, 1)
+
+    by_passer: list[PasserReceiveSummary] = []
+    for label in sorted(passer_buckets, key=_passer_sort_key):
+        scores = passer_buckets[label]
+        cnt = len(scores)
+        p_counts = {"0": 0, "1": 0, "2": 0, "3": 0}
+        p_in_sys = 0
+        for sc in scores:
+            p_counts[str(sc)] += 1
+            if sc >= 2:
+                p_in_sys += 1
+        by_passer.append(
+            PasserReceiveSummary(
+                passer_label=label,
+                count=cnt,
+                avg_rating=round(sum(scores) / cnt, 2),
+                in_system_pct=round(100.0 * p_in_sys / cnt, 1),
+                score_counts=p_counts,
+            )
+        )
+
+    return ReceiveQualitySummary(
+        scored_count=total,
+        avg_rating=round(score_sum / total, 2),
+        in_system_count=in_system,
+        in_system_pct=round(100.0 * in_system / total, 1),
+        perfect_count=perfect,
+        perfect_pct=round(100.0 * perfect / total, 1),
+        score_counts=score_counts,
+        score_pcts=score_pcts,
+        by_passer=by_passer,
     )

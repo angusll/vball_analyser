@@ -168,6 +168,34 @@ class ServeEvent(BaseModel):
     is_seam: bool = False
     seam_pair: tuple[str, str] | None = None
     passers_snapshot: list[PasserPosition] = Field(default_factory=list)
+    passer_label: str | None = None
+    pass_x_m: float | None = None
+    pass_y_m: float | None = None
+    pass_timestamp_s: float | None = None
+    pass_frame_idx: int | None = None
+    pass_distance_m: float | None = None
+    receive_score: Literal[0, 1, 2, 3] | None = None
+    receive_score_manual: bool = False
+
+
+class PasserReceiveSummary(BaseModel):
+    passer_label: str
+    count: int = 0
+    avg_rating: float = 0.0
+    in_system_pct: float = 0.0
+    score_counts: dict[str, int] = Field(default_factory=lambda: {"0": 0, "1": 0, "2": 0, "3": 0})
+
+
+class ReceiveQualitySummary(BaseModel):
+    scored_count: int = 0
+    avg_rating: float = 0.0
+    in_system_count: int = 0
+    in_system_pct: float = 0.0
+    perfect_count: int = 0
+    perfect_pct: float = 0.0
+    score_counts: dict[str, int] = Field(default_factory=lambda: {"0": 0, "1": 0, "2": 0, "3": 0})
+    score_pcts: dict[str, float] = Field(default_factory=lambda: {"0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0})
+    by_passer: list[PasserReceiveSummary] = Field(default_factory=list)
 
 
 class ServeDistributionSummary(BaseModel):
@@ -198,5 +226,7 @@ class ServeSession(BaseModel):
     error_message: str | None = None
     court_calibration: CourtCalibration | None = None
     default_passers: list[PasserPosition] = Field(default_factory=list)
+    setter_target: Point2D = Field(default_factory=lambda: Point2D(x=6.0, y=0.8))
+    receive_ring_radii_m: tuple[float, float, float] = (1.5, 3.2, 4.8)
     servers: list[str] = Field(default_factory=list)
     serves: list[ServeEvent] = Field(default_factory=list)

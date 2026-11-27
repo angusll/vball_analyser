@@ -7,6 +7,15 @@
   const PAD_TOP = 0.7;
   const PAD_BOT = 1.8;
 
+  const DEFAULT_SETTER_TARGET = { x: 6.0, y: 0.8 };
+  const RECEIVE_RING_RADII_M = { 3: 1.5, 2: 3.2, 1: 4.8 };
+  const RECEIVE_SCORE_COLORS = {
+    3: "#22c55e",
+    2: "#eab308",
+    1: "#ef4444",
+    0: "#94a3b8",
+  };
+
   const FORMATIONS = {
     2: [
       { label: "P1", x_m: 2.5, y_m: 6.3 },
@@ -40,10 +49,12 @@
 
   const sState = {
     initialized: false,
+    mode: "serve", // "serve" | "receive"
     sessions: [],
     videoSessions: [],
     session: null,
     summary: null,
+    receiveSummary: null,
     activeServer: "All",
     resultMode: "in",
     selectedServeId: null,
@@ -55,7 +66,7 @@
     calMode: "net", // "net" (3 clicks) | "four_corner" (4 clicks)
     calPoints: [],
     calHover: null,
-    dragTarget: null, // { type: "passer" | "serve", index, serveId }
+    dragTarget: null, // { type: "passer" | "serve" | "setterTarget" | "pass", ... }
     pollTimer: null,
     pendingConfirm: null, // "clear" | "deleteSession" | null
     confirmTimer: null,
@@ -84,25 +95,47 @@
     video: document.getElementById("serveVideo"),
     videoCanvas: document.getElementById("serveVideoCanvas"),
     seekSlider: document.getElementById("serveSeekSlider"),
+    courtTitle: document.getElementById("serveCourtTitle"),
+    formationGroup: document.getElementById("serveFormationGroup"),
+    layerToggles: document.getElementById("serveLayerToggles"),
     courtCanvas: document.getElementById("serveCourtCanvas"),
     selectionInfo: document.getElementById("serveSelectionInfo"),
     selectedResult: document.getElementById("selectedServeResult"),
+    selectedReceiveScore: document.getElementById("selectedReceiveScore"),
+    selectedPasserLabel: document.getElementById("selectedPasserLabel"),
     deselectBtn: document.getElementById("deselectServeBtn"),
     undoBtn: document.getElementById("undoServeBtn"),
     clearBtn: document.getElementById("clearServesBtn"),
     resetPassersBtn: document.getElementById("resetPassersBtn"),
+    resetSetterTargetBtn: document.getElementById("resetSetterTargetBtn"),
     toggleDotsBtn: document.getElementById("toggleDotsBtn"),
     toggleHeatmapBtn: document.getElementById("toggleHeatmapBtn"),
     toggleSeamsBtn: document.getElementById("toggleSeamsBtn"),
     serverChips: document.getElementById("serverChips"),
     addServerForm: document.getElementById("addServerForm"),
     newServerInput: document.getElementById("newServerInput"),
+    manualResultSection: document.getElementById("serveManualResultSection"),
+    distSummarySection: document.getElementById("serveDistSummarySection"),
+    areaBreakdownSection: document.getElementById("serveAreaBreakdownSection"),
+    receiveSummarySection: document.getElementById("receiveSummarySection"),
+    receiveScoredBadge: document.getElementById("receiveScoredBadge"),
+    receiveSummaryCards: document.getElementById("receiveSummaryCards"),
+    receiveScoreBars: document.getElementById("receiveScoreBars"),
+    ringRadius3: document.getElementById("ringRadius3"),
+    ringRadius2: document.getElementById("ringRadius2"),
+    ringRadius1: document.getElementById("ringRadius1"),
+    ringRadius3Val: document.getElementById("ringRadius3Val"),
+    ringRadius2Val: document.getElementById("ringRadius2Val"),
+    ringRadius1Val: document.getElementById("ringRadius1Val"),
+    receivePasserSection: document.getElementById("receivePasserSection"),
+    receivePasserTable: document.getElementById("receivePasserTable"),
     resultModeGroup: document.getElementById("resultModeGroup"),
     totalBadge: document.getElementById("serveTotalBadge"),
     summaryCards: document.getElementById("serveSummaryCards"),
     seamPairs: document.getElementById("serveSeamPairs"),
     depthBadge: document.getElementById("serveDepthBadge"),
     zoneBars: document.getElementById("serveZoneBars"),
+    logTitle: document.getElementById("serveLogTitle"),
     logList: document.getElementById("serveLogList"),
   };
 
@@ -150,6 +183,112 @@
     if (!sState.session) return [];
     if (sState.activeServer === "All") return sState.session.serves;
     return sState.session.serves.filter((s) => s.server_name === sState.activeServer);
+  }
+
+  function getSetterTarget() {
+    const t = sState.session && sState.session.setter_target;
+    if (t && typeof t.x === "number" && typeof t.y === "number") {
+      return t;
+    }
+    return { x: DEFAULT_SETTER_TARGET.x, y: DEFAULT_SETTER_TARGET.y };
+  }
+
+  function getRingRadii() {
+    const r = sState.session && sState.session.receive_ring_radii_m;
+    if (Array.isArray(r) && r.length === 3 && r.every((v) => typeof v === "number" && Number.isFinite(v))) {
+      return [r[0], r[1], r[2]];
+    }
+    return [RECEIVE_RING_RADII_M[3], RECEIVE_RING_RADII_M[2], RECEIVE_RING_RADII_M[1]];
+  }
+
+  function normalizeLocalRingRadii(radii, changedIdx) {
+    let [r3, r2, r1] = radii.map((v) => Number(v));
+    if (changedIdx === 0) {
+      r3 = Math.max(0.4, Math.min(4.0, r3));
+      r2 = Math.max(r3 + 0.3, Math.min(6.5, r2));
+      r1 = Math.max(r2 + 0.3, Math.min(8.5, r1));
+    } else if (changedIdx === 1) {
+      r2 = Math.max(0.7, Math.min(6.5, r2));
+      if (r3 > r2 - 0.3) r3 = Math.max(0.4, r2 - 0.3);
+      r2 = Math.max(r3 + 0.3, r2);
+      r1 = Math.max(r2 + 0.3, Math.min(8.5, r1));
+    } else if (changedIdx === 2) {
+      r1 = Math.max(1.0, Math.min(8.5, r1));
+      if (r2 > r1 - 0.3) r2 = Math.max(0.7, r1 - 0.3);
+      if (r3 > r2 - 0.3) r3 = Math.max(0.4, r2 - 0.3);
+      r2 = Math.max(r3 + 0.3, r2);
+      r1 = Math.max(r2 + 0.3, r1);
+    } else {
+      r3 = Math.max(0.4, Math.min(4.0, r3));
+      r2 = Math.max(r3 + 0.3, Math.min(6.5, r2));
+      r1 = Math.max(r2 + 0.3, Math.min(8.5, r1));
+    }
+    return [
+      Math.round(r3 * 100) / 100,
+      Math.round(r2 * 100) / 100,
+      Math.round(r1 * 100) / 100,
+    ];
+  }
+
+  function syncRingSliders() {
+    const [r3, r2, r1] = getRingRadii();
+    if (sEls.ringRadius3) sEls.ringRadius3.value = String(r3);
+    if (sEls.ringRadius2) sEls.ringRadius2.value = String(r2);
+    if (sEls.ringRadius1) sEls.ringRadius1.value = String(r1);
+    if (sEls.ringRadius3Val) sEls.ringRadius3Val.textContent = `${r3.toFixed(1)}m`;
+    if (sEls.ringRadius2Val) sEls.ringRadius2Val.textContent = `${r2.toFixed(1)}m`;
+    if (sEls.ringRadius1Val) sEls.ringRadius1Val.textContent = `${r1.toFixed(1)}m`;
+  }
+
+  function computeLocalReceiveScore(passX, passY, target) {
+    if (passY < 0) return 0;
+    const [r3, r2, r1] = getRingRadii();
+    const d = Math.hypot(passX - target.x, passY - target.y);
+    if (d <= r3) return 3;
+    if (d <= r2) return 2;
+    if (d <= r1) return 1;
+    return 0;
+  }
+
+  function refreshLocalReceiveScores() {
+    if (!sState.session || !Array.isArray(sState.session.serves)) return;
+    const target = getSetterTarget();
+    for (const sv of sState.session.serves) {
+      if (sv.result === "in" && sv.pass_x_m != null && sv.pass_y_m != null && !sv.receive_score_manual) {
+        sv.receive_score = computeLocalReceiveScore(sv.pass_x_m, sv.pass_y_m, target);
+      }
+    }
+  }
+
+  function setServeMode(mode) {
+    sState.mode = mode === "receive" ? "receive" : "serve";
+    const isReceive = sState.mode === "receive";
+
+    document.querySelectorAll(".serve-mode-btn").forEach((btn) => {
+      const active = btn.getAttribute("data-serve-mode") === sState.mode;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", String(active));
+    });
+
+    if (sEls.courtTitle) {
+      sEls.courtTitle.textContent = isReceive
+        ? "Receive Quality (Setter Target)"
+        : "Receiving Court (9m × 9m)";
+    }
+    if (sEls.formationGroup) sEls.formationGroup.classList.toggle("hidden", isReceive);
+    if (sEls.layerToggles) sEls.layerToggles.classList.toggle("hidden", isReceive);
+    if (sEls.resetPassersBtn) sEls.resetPassersBtn.classList.toggle("hidden", isReceive);
+    if (sEls.resetSetterTargetBtn) sEls.resetSetterTargetBtn.classList.toggle("hidden", !isReceive);
+
+    if (sEls.manualResultSection) sEls.manualResultSection.classList.toggle("hidden", isReceive);
+    if (sEls.distSummarySection) sEls.distSummarySection.classList.toggle("hidden", isReceive);
+    if (sEls.areaBreakdownSection) sEls.areaBreakdownSection.classList.toggle("hidden", isReceive);
+    if (sEls.receiveSummarySection) sEls.receiveSummarySection.classList.toggle("hidden", !isReceive);
+    if (sEls.receivePasserSection) sEls.receivePasserSection.classList.toggle("hidden", !isReceive);
+    if (sEls.logTitle) sEls.logTitle.textContent = isReceive ? "Serve / Receive Log" : "Serve Log";
+
+    renderCourt();
+    renderSidebar();
   }
 
   // Solve 3x3 homography mapping court (0,0),(9,0),(9,3),(0,3) -> 4 image points (for live grid preview)
@@ -359,6 +498,11 @@
     ctx.fillStyle = "rgba(56, 189, 248, 0.06)";
     ctx.fillRect(tl.x, tl.y, atkR.x - tl.x, atkR.y - tl.y);
 
+    if (sState.mode === "receive") {
+      renderReceiveCourtLayers(ctx, tf, tl, br, atkR);
+      return;
+    }
+
     // Seam corridors between adjacent passers
     const passers = getDisplayedPassers();
     if (sState.showSeams && passers.length >= 2) {
@@ -519,6 +663,203 @@
     }
   }
 
+  function renderReceiveCourtLayers(ctx, tf, tl, br, atkR) {
+    const target = getSetterTarget();
+    const tPx = tf.toPx(target.x, target.y);
+
+    // Concentric filled scoring rings clipped to the 9m x 9m court
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+    ctx.clip();
+
+    const [r3, r2, r1] = getRingRadii();
+    const rings = [
+      { score: "1", r: r1, fill: "rgba(239, 68, 68, 0.22)", stroke: "rgba(239, 68, 68, 0.78)", labelColor: "rgba(252, 165, 165, 0.9)", labelDist: 0.5 * (r2 + r1) },
+      { score: "2", r: r2, fill: "rgba(234, 179, 8, 0.26)", stroke: "rgba(234, 179, 8, 0.84)", labelColor: "rgba(253, 224, 71, 0.92)", labelDist: 0.5 * (r3 + r2) },
+      { score: "3", r: r3, fill: "rgba(34, 197, 94, 0.30)", stroke: "rgba(34, 197, 94, 0.88)", labelColor: "rgba(134, 239, 172, 0.95)", labelDist: r3 * 0.62 },
+    ];
+
+    for (const ring of rings) {
+      const rPx = ring.r * tf.scale;
+      // Repaint base court color inside each inner circle so semi-transparent tints stay pure
+      ctx.fillStyle = "#142642";
+      ctx.beginPath();
+      ctx.arc(tPx.x, tPx.y, rPx, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = ring.fill;
+      ctx.beginPath();
+      ctx.arc(tPx.x, tPx.y, rPx, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = ring.stroke;
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    }
+
+    // Subtle ring score labels (3, 2, 1) along lower-left diagonal from setter target
+    const labelAngle = Math.PI * 0.65;
+    ctx.font = "700 13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const ring of rings) {
+      const lx = target.x + Math.cos(labelAngle) * ring.labelDist;
+      const ly = target.y + Math.sin(labelAngle) * ring.labelDist;
+      const lPx = tf.toPx(lx, ly);
+      ctx.fillStyle = ring.labelColor;
+      ctx.fillText(ring.score, lPx.x, lPx.y);
+    }
+
+    // Subtle "0" label in unshaded court area
+    const zeroPx = tf.toPx(1.1, 8.2);
+    ctx.fillStyle = "rgba(148, 163, 184, 0.5)";
+    ctx.fillText("0", zeroPx.x, zeroPx.y);
+    ctx.restore();
+
+    // Subtle zone grid lines
+    ctx.save();
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.24)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    for (const xm of [3.0, 6.0]) {
+      const a = tf.toPx(xm, 0);
+      const b = tf.toPx(xm, COURT_L);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // 3m attack line
+    ctx.strokeStyle = "rgba(226, 232, 240, 0.72)";
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(tl.x, atkR.y);
+    ctx.lineTo(br.x, atkR.y);
+    ctx.stroke();
+
+    // Outer court boundary
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 2.2;
+    ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+
+    // Net bar at y=0
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(tl.x - 10, tl.y);
+    ctx.lineTo(br.x + 10, tl.y);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(148, 163, 184, 0.75)";
+    ctx.font = "600 11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText("NET", (tl.x + br.x) / 2, tl.y - 10);
+
+    // Selected serve origin + dashed arrow to pass destination
+    const sel = getSelectedServe();
+    if (sel && sel.pass_x_m != null && sel.pass_y_m != null) {
+      const origPt = tf.toPx(sel.x_m, sel.y_m);
+      const passPt = tf.toPx(sel.pass_x_m, sel.pass_y_m);
+      ctx.save();
+      // Dashed arrow line
+      ctx.strokeStyle = "rgba(248, 250, 252, 0.85)";
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(origPt.x, origPt.y);
+      ctx.lineTo(passPt.x, passPt.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Arrowhead near pass destination
+      const dx = passPt.x - origPt.x;
+      const dy = passPt.y - origPt.y;
+      const len = Math.hypot(dx, dy);
+      if (len > 14) {
+        const ux = dx / len;
+        const uy = dy / len;
+        const tipX = passPt.x - ux * 10;
+        const tipY = passPt.y - uy * 10;
+        const headLen = 8;
+        const headW = 4.5;
+        ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX - ux * headLen - uy * headW, tipY - uy * headLen + ux * headW);
+        ctx.lineTo(tipX - ux * headLen + uy * headW, tipY - uy * headLen - ux * headW);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Subtle reception origin marker
+      ctx.fillStyle = "rgba(56, 189, 248, 0.3)";
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.arc(origPt.x, origPt.y, 5.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Draggable Setter Target marker
+    ctx.save();
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "#090d16";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(tPx.x, tPx.y, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = "#090d16";
+    ctx.beginPath();
+    ctx.arc(tPx.x, tPx.y, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // "Setter" label above the target circle
+    ctx.font = "700 11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = "rgba(9, 13, 22, 0.9)";
+    ctx.strokeText("Setter", tPx.x, tPx.y - 13);
+    ctx.fillStyle = "#f8fafc";
+    ctx.fillText("Setter", tPx.x, tPx.y - 13);
+    ctx.restore();
+
+    // Pass destination dots for all visible serves with pass coordinates
+    const visibleServes = getVisibleServes();
+    for (const sv of visibleServes) {
+      if (sv.pass_x_m == null || sv.pass_y_m == null) continue;
+      const pt = tf.toPx(sv.pass_x_m, sv.pass_y_m);
+      const isSel = sv.serve_id === sState.selectedServeId;
+      const scoreKey = sv.receive_score != null ? sv.receive_score : 0;
+      const fill = RECEIVE_SCORE_COLORS[scoreKey] || RECEIVE_SCORE_COLORS[0];
+
+      ctx.save();
+      if (isSel) {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 11.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = isSel ? "#ffffff" : "#090d16";
+      ctx.lineWidth = isSel ? 2.5 : 1.6;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, isSel ? 7.5 : 5.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   function renderSidebar() {
     const sess = sState.session;
     const sum = sState.summary;
@@ -602,7 +943,121 @@
       sEls.zoneBars.appendChild(row);
     }
 
-    // Serve log list
+    // Receive Quality Summary
+    syncRingSliders();
+    const rSum = sState.receiveSummary;
+    if (sEls.receiveScoredBadge) {
+      sEls.receiveScoredBadge.textContent = String(rSum ? rSum.scored_count : 0);
+    }
+    if (sEls.receiveSummaryCards) {
+      sEls.receiveSummaryCards.replaceChildren();
+      const avgText = rSum && rSum.scored_count > 0
+        ? `${Number(rSum.avg_rating || 0).toFixed(2)} / 3.0`
+        : "0.00 / 3.0";
+      const rKpis = [
+        { label: "Avg Rating", value: avgText, cls: "accent-cyan" },
+        { label: "In-System", value: `${rSum ? rSum.in_system_pct : 0}%`, cls: "accent-green" },
+        { label: "Perfect (3)", value: `${rSum ? rSum.perfect_pct : 0}%`, cls: "accent-gold" },
+        { label: "Scored", value: String(rSum ? rSum.scored_count : 0), cls: "" },
+      ];
+      for (const k of rKpis) {
+        const card = document.createElement("div");
+        card.className = "serve-kpi-card";
+        const lbl = document.createElement("span");
+        lbl.className = "serve-kpi-label";
+        lbl.textContent = k.label;
+        const val = document.createElement("span");
+        val.className = k.cls ? `serve-kpi-value ${k.cls}` : "serve-kpi-value";
+        val.textContent = k.value;
+        card.appendChild(lbl);
+        card.appendChild(val);
+        sEls.receiveSummaryCards.appendChild(card);
+      }
+    }
+
+    if (sEls.receiveScoreBars) {
+      sEls.receiveScoreBars.replaceChildren();
+      const scoreRows = [
+        { key: "3", label: "3 (Perfect)" },
+        { key: "2", label: "2 (Good)" },
+        { key: "1", label: "1 (Out-of-Sys)" },
+        { key: "0", label: "0 (Bad)" },
+      ];
+      for (const sr of scoreRows) {
+        const cnt = rSum && rSum.score_counts ? rSum.score_counts[sr.key] || 0 : 0;
+        const pct = rSum && rSum.score_pcts ? rSum.score_pcts[sr.key] || 0 : 0;
+        const row = document.createElement("div");
+        row.className = "zone-bar-row receive-bar-row";
+        const lbl = document.createElement("span");
+        lbl.className = "zone-bar-label";
+        lbl.textContent = sr.label;
+        const track = document.createElement("div");
+        track.className = "zone-bar-track";
+        const fill = document.createElement("div");
+        fill.className = `zone-bar-fill score-${sr.key}`;
+        fill.style.width = `${Math.min(100, pct)}%`;
+        track.appendChild(fill);
+        const val = document.createElement("span");
+        val.className = "zone-bar-val";
+        val.textContent = `${cnt} (${pct}%)`;
+        row.appendChild(lbl);
+        row.appendChild(track);
+        row.appendChild(val);
+        sEls.receiveScoreBars.appendChild(row);
+      }
+    }
+
+    // By Passer table
+    if (sEls.receivePasserTable) {
+      sEls.receivePasserTable.replaceChildren();
+      const byPasser = rSum && Array.isArray(rSum.by_passer) ? rSum.by_passer : [];
+      if (!byPasser.length) {
+        const empty = document.createElement("div");
+        empty.className = "serve-selection-info";
+        empty.textContent = "No scored passes yet.";
+        sEls.receivePasserTable.appendChild(empty);
+      } else {
+        const head = document.createElement("div");
+        head.className = "passer-row passer-row-head";
+        const headers = [
+          { text: "Passer", cls: "" },
+          { text: "Cnt", cls: "passer-cell-num" },
+          { text: "Avg", cls: "passer-cell-num" },
+          { text: "In-Sys", cls: "passer-cell-num" },
+        ];
+        for (const h of headers) {
+          const cell = document.createElement("span");
+          if (h.cls) cell.className = h.cls;
+          cell.textContent = h.text;
+          head.appendChild(cell);
+        }
+        sEls.receivePasserTable.appendChild(head);
+
+        for (const p of byPasser) {
+          const row = document.createElement("div");
+          row.className = "passer-row";
+          const cLbl = document.createElement("span");
+          cLbl.className = "passer-cell-label";
+          cLbl.textContent = p.passer_label || "Unassigned";
+          const cCnt = document.createElement("span");
+          cCnt.className = "passer-cell-num";
+          cCnt.textContent = String(p.count || 0);
+          const cAvg = document.createElement("span");
+          cAvg.className = "passer-cell-num";
+          cAvg.textContent = Number(p.avg_rating || 0).toFixed(2);
+          const cInSys = document.createElement("span");
+          cInSys.className = "passer-cell-num";
+          cInSys.textContent = `${p.in_system_pct || 0}%`;
+          row.appendChild(cLbl);
+          row.appendChild(cCnt);
+          row.appendChild(cAvg);
+          row.appendChild(cInSys);
+          sEls.receivePasserTable.appendChild(row);
+        }
+      }
+    }
+
+    // Serve / Receive log list
     sEls.logList.replaceChildren();
     const visible = getVisibleServes();
     if (!visible.length) {
@@ -618,10 +1073,29 @@
 
         const meta = document.createElement("div");
         meta.className = "serve-log-meta";
+
+        if (sv.receive_score !== null && sv.receive_score !== undefined) {
+          const pill = document.createElement("span");
+          pill.className = `receive-score-pill score-${sv.receive_score}`;
+          pill.textContent = String(sv.receive_score);
+          pill.title = `Receive score: ${sv.receive_score}`;
+          meta.appendChild(pill);
+        }
+
+        if (sv.passer_label) {
+          const pTag = document.createElement("span");
+          pTag.className = "passer-tag";
+          pTag.textContent = sv.passer_label;
+          meta.appendChild(pTag);
+        }
+
         const parts = [`#${sv.index}`, sv.zone, sv.result.toUpperCase()];
         if (sv.is_seam && sv.seam_pair) parts.push(`${sv.seam_pair[0]}-${sv.seam_pair[1]} Seam`);
-        if (sv.timestamp_s !== null && sv.timestamp_s !== undefined) parts.push(`${sv.timestamp_s.toFixed(1)}s`);
-        meta.textContent = parts.join(" · ");
+        const tsVal = sState.mode === "receive" && sv.pass_timestamp_s != null ? sv.pass_timestamp_s : sv.timestamp_s;
+        if (tsVal !== null && tsVal !== undefined) parts.push(`${tsVal.toFixed(1)}s`);
+        const txt = document.createElement("span");
+        txt.textContent = parts.join(" · ");
+        meta.appendChild(txt);
 
         const delBtn = document.createElement("button");
         delBtn.type = "button";
@@ -640,27 +1114,53 @@
       }
     }
 
-    // Selection info
+    // Selection info & footer controls
     const sel = getSelectedServe();
+    const isReceive = sState.mode === "receive";
     if (sel) {
       sEls.deselectBtn.classList.remove("hidden");
-      sEls.selectedResult.classList.remove("hidden");
+      sEls.selectedResult.classList.toggle("hidden", isReceive);
       sEls.selectedResult.value = sel.result;
-      const seamTxt = sel.is_seam && sel.seam_pair ? ` · ${sel.seam_pair[0]}-${sel.seam_pair[1]} Seam` : "";
-      sEls.selectionInfo.textContent = `Selected #${sel.index} (${sel.zone}${seamTxt}) — drag dot or passers to edit`;
+      if (sEls.selectedReceiveScore) {
+        sEls.selectedReceiveScore.classList.toggle("hidden", !isReceive);
+        sEls.selectedReceiveScore.value =
+          sel.receive_score_manual && sel.receive_score != null ? String(sel.receive_score) : "auto";
+      }
+      if (sEls.selectedPasserLabel) {
+        sEls.selectedPasserLabel.classList.toggle("hidden", !isReceive);
+        sEls.selectedPasserLabel.value = sel.passer_label || "";
+      }
+      if (isReceive) {
+        const scoreTxt = sel.receive_score != null ? `Score ${sel.receive_score}` : "Unscored";
+        const passerTxt = sel.passer_label ? ` · ${sel.passer_label}` : "";
+        sEls.selectionInfo.textContent = `Selected #${sel.index} (${scoreTxt}${passerTxt}) — click court or drag dot to set pass target`;
+      } else {
+        const seamTxt = sel.is_seam && sel.seam_pair ? ` · ${sel.seam_pair[0]}-${sel.seam_pair[1]} Seam` : "";
+        sEls.selectionInfo.textContent = `Selected #${sel.index} (${sel.zone}${seamTxt}) — drag dot or passers to edit`;
+      }
     } else {
       sEls.deselectBtn.classList.add("hidden");
       sEls.selectedResult.classList.add("hidden");
-      sEls.selectionInfo.textContent = "Click court to log serve · Drag passers to adjust default formation";
+      if (sEls.selectedReceiveScore) sEls.selectedReceiveScore.classList.add("hidden");
+      if (sEls.selectedPasserLabel) sEls.selectedPasserLabel.classList.add("hidden");
+      sEls.selectionInfo.textContent = isReceive
+        ? "Click court to log receive · Drag Setter target or pass dots"
+        : "Click court to log serve · Drag passers to adjust default formation";
     }
   }
 
   function selectServe(sv) {
     sState.selectedServeId = sv ? sv.serve_id : null;
-    if (sv && sv.timestamp_s !== null && sv.timestamp_s !== undefined && sEls.video.src) {
-      sEls.video.currentTime = sv.timestamp_s;
-      sEls.video.pause();
-      sEls.playPauseBtn.textContent = "Play";
+    if (sv && sEls.video.src) {
+      const seekTs =
+        sState.mode === "receive" && sv.pass_timestamp_s != null
+          ? sv.pass_timestamp_s
+          : sv.timestamp_s;
+      if (seekTs !== null && seekTs !== undefined) {
+        sEls.video.currentTime = seekTs;
+        sEls.video.pause();
+        sEls.playPauseBtn.textContent = "Play";
+      }
     }
     renderCourt();
     renderSidebar();
@@ -669,6 +1169,7 @@
   function applyServePayload(payload) {
     sState.session = payload.session;
     sState.summary = payload.summary;
+    sState.receiveSummary = payload.receive_summary || null;
     const sess = sState.session;
 
     // Status pill & progress
@@ -842,6 +1343,13 @@
   }
 
   function setupServeListeners() {
+    document.querySelectorAll(".serve-mode-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.getAttribute("data-serve-mode") || "serve";
+        setServeMode(mode);
+      });
+    });
+
     sEls.sessionSelect.addEventListener("change", () => {
       sState.selectedServeId = null;
       sState.activeServer = "All";
@@ -1070,6 +1578,58 @@
       }
     });
 
+    if (sEls.resetSetterTargetBtn) {
+      sEls.resetSetterTargetBtn.addEventListener("click", async () => {
+        if (!sState.session) return;
+        try {
+          showBanner("", false);
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+            {
+              setter_target: { x: DEFAULT_SETTER_TARGET.x, y: DEFAULT_SETTER_TARGET.y },
+              receive_ring_radii_m: [RECEIVE_RING_RADII_M[3], RECEIVE_RING_RADII_M[2], RECEIVE_RING_RADII_M[1]],
+            }
+          );
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Unable to reset setter target.", true);
+        }
+      });
+    }
+
+    // Scoring ring radius sliders (live preview on input, persist on change)
+    const ringSliders = [
+      { el: sEls.ringRadius3, idx: 0 },
+      { el: sEls.ringRadius2, idx: 1 },
+      { el: sEls.ringRadius1, idx: 2 },
+    ];
+    for (const item of ringSliders) {
+      if (!item.el) continue;
+      item.el.addEventListener("input", () => {
+        if (!sState.session) return;
+        const cur = getRingRadii();
+        cur[item.idx] = parseFloat(item.el.value);
+        sState.session.receive_ring_radii_m = normalizeLocalRingRadii(cur, item.idx);
+        syncRingSliders();
+        refreshLocalReceiveScores();
+        renderCourt();
+      });
+      item.el.addEventListener("change", async () => {
+        if (!sState.session) return;
+        try {
+          showBanner("", false);
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+            { receive_ring_radii_m: getRingRadii() }
+          );
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Unable to update scoring ring sizes.", true);
+          await refreshCurrentSession();
+        }
+      });
+    }
+
     sEls.selectedResult.addEventListener("change", async () => {
       const sel = getSelectedServe();
       if (!sState.session || !sel) return;
@@ -1085,6 +1645,48 @@
         await refreshCurrentSession();
       }
     });
+
+    if (sEls.selectedReceiveScore) {
+      sEls.selectedReceiveScore.addEventListener("change", async () => {
+        const sel = getSelectedServe();
+        if (!sState.session || !sel) return;
+        const val = sEls.selectedReceiveScore.value;
+        const body = val === "auto"
+          ? { clear_receive_score: true }
+          : { receive_score: parseInt(val, 10) };
+        try {
+          showBanner("", false);
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
+            body
+          );
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Unable to update receive score.", true);
+          await refreshCurrentSession();
+        }
+      });
+    }
+
+    if (sEls.selectedPasserLabel) {
+      sEls.selectedPasserLabel.addEventListener("change", async () => {
+        const sel = getSelectedServe();
+        if (!sState.session || !sel) return;
+        const val = sEls.selectedPasserLabel.value;
+        const body = val ? { passer_label: val } : { clear_passer_label: true };
+        try {
+          showBanner("", false);
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
+            body
+          );
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Unable to update passer label.", true);
+          await refreshCurrentSession();
+        }
+      });
+    }
 
     sEls.deselectBtn.addEventListener("click", () => selectServe(null));
 
@@ -1168,11 +1770,40 @@
       }
     });
 
-    // Interactive court pointer handlers (passer drag, serve select/drag, click-to-log)
+    // Interactive court pointer handlers (passer drag, serve select/drag, receive target/pass drag, click-to-log)
     sEls.courtCanvas.addEventListener("pointerdown", (ev) => {
       if (!sState.session) return;
       const pos = canvasPointerPos(sEls.courtCanvas, ev);
       const tf = courtTransform(sEls.courtCanvas.clientWidth, sEls.courtCanvas.clientHeight);
+
+      if (sState.mode === "receive") {
+        // Hit-test Setter Target circle first
+        const target = getSetterTarget();
+        const tPx = tf.toPx(target.x, target.y);
+        if (Math.hypot(pos.x - tPx.x, pos.y - tPx.y) <= 15) {
+          if (!sState.session.setter_target) {
+            sState.session.setter_target = { x: target.x, y: target.y };
+          }
+          sState.dragTarget = { type: "setterTarget", startX: pos.x, startY: pos.y, moved: false };
+          sEls.courtCanvas.setPointerCapture(ev.pointerId);
+          return;
+        }
+
+        // Hit-test pass destination dots
+        const visible = getVisibleServes();
+        for (let i = visible.length - 1; i >= 0; i--) {
+          const sv = visible[i];
+          if (sv.pass_x_m == null || sv.pass_y_m == null) continue;
+          const pt = tf.toPx(sv.pass_x_m, sv.pass_y_m);
+          if (Math.hypot(pos.x - pt.x, pos.y - pt.y) <= 12) {
+            selectServe(sv);
+            sState.dragTarget = { type: "pass", serveId: sv.serve_id, startX: pos.x, startY: pos.y, moved: false };
+            sEls.courtCanvas.setPointerCapture(ev.pointerId);
+            return;
+          }
+        }
+        return;
+      }
 
       // Hit-test passers first
       const passers = getDisplayedPassers();
@@ -1204,16 +1835,45 @@
     });
 
     sEls.courtCanvas.addEventListener("pointermove", (ev) => {
-      if (!sState.dragTarget || !sState.session) return;
+      if (!sState.session) return;
       const pos = canvasPointerPos(sEls.courtCanvas, ev);
+      const tf = courtTransform(sEls.courtCanvas.clientWidth, sEls.courtCanvas.clientHeight);
+
+      if (!sState.dragTarget) {
+        if (sState.mode === "receive") {
+          const target = getSetterTarget();
+          const tPx = tf.toPx(target.x, target.y);
+          const distPx = Math.hypot(pos.x - tPx.x, pos.y - tPx.y);
+          sEls.courtCanvas.style.cursor = distPx <= 15 ? "grab" : "crosshair";
+        } else {
+          sEls.courtCanvas.style.cursor = "crosshair";
+        }
+        return;
+      }
+
       if (!sState.dragTarget.moved && Math.hypot(pos.x - sState.dragTarget.startX, pos.y - sState.dragTarget.startY) <= 4) {
         return;
       }
-      const tf = courtTransform(sEls.courtCanvas.clientWidth, sEls.courtCanvas.clientHeight);
       const { x_m, y_m } = tf.toCourt(pos.x, pos.y);
       sState.dragTarget.moved = true;
 
-      if (sState.dragTarget.type === "passer") {
+      if (sState.dragTarget.type === "setterTarget") {
+        if (!sState.session.setter_target) {
+          sState.session.setter_target = { x: DEFAULT_SETTER_TARGET.x, y: DEFAULT_SETTER_TARGET.y };
+        }
+        sState.session.setter_target.x = Math.max(0.5, Math.min(8.5, x_m));
+        sState.session.setter_target.y = Math.max(0.2, Math.min(4.0, y_m));
+        refreshLocalReceiveScores();
+        renderCourt();
+      } else if (sState.dragTarget.type === "pass") {
+        const sv = sState.session.serves.find((s) => s.serve_id === sState.dragTarget.serveId);
+        if (sv) {
+          sv.pass_x_m = Math.max(-1.4, Math.min(10.4, x_m));
+          sv.pass_y_m = Math.max(-0.5, Math.min(10.8, y_m));
+          sv.receive_score = computeLocalReceiveScore(sv.pass_x_m, sv.pass_y_m, getSetterTarget());
+          renderCourt();
+        }
+      } else if (sState.dragTarget.type === "passer") {
         const passers = getDisplayedPassers();
         const p = passers[sState.dragTarget.index];
         if (p) {
@@ -1252,7 +1912,23 @@
 
         try {
           showBanner("", false);
-          if (drag.type === "passer") {
+          if (drag.type === "setterTarget") {
+            const target = getSetterTarget();
+            const payload = await postServe(
+              `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+              { setter_target: { x: target.x, y: target.y } }
+            );
+            applyServePayload(payload);
+          } else if (drag.type === "pass") {
+            const sv = sState.session.serves.find((s) => s.serve_id === drag.serveId);
+            if (sv) {
+              const payload = await postServe(
+                `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sv.serve_id)}/update`,
+                { pass_x_m: sv.pass_x_m, pass_y_m: sv.pass_y_m }
+              );
+              applyServePayload(payload);
+            }
+          } else if (drag.type === "passer") {
             const sel = getSelectedServe();
             if (sel) {
               const payload = await postServe(
@@ -1284,12 +1960,44 @@
         return;
       }
 
-      // Empty court click -> log new manual serve
+      // Empty court click
       const { x_m, y_m } = tf.toCourt(pos.x, pos.y);
       const clampedX = Math.max(-1.4, Math.min(10.4, x_m));
       const clampedY = Math.max(-0.5, Math.min(10.8, y_m));
       const serverName = sState.activeServer === "All" ? "Unassigned" : sState.activeServer;
       const ts = sState.session.video_session_id && sEls.video.src ? sEls.video.currentTime : null;
+
+      if (sState.mode === "receive") {
+        const sel = getSelectedServe();
+        try {
+          showBanner("", false);
+          if (sel) {
+            const payload = await postServe(
+              `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
+              { pass_x_m: clampedX, pass_y_m: clampedY }
+            );
+            applyServePayload(payload);
+          } else {
+            const payload = await postServe(
+              `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves`,
+              {
+                x_m: 4.5,
+                y_m: 6.5,
+                result: "in",
+                server_name: serverName,
+                timestamp_s: ts,
+                pass_x_m: clampedX,
+                pass_y_m: clampedY,
+              }
+            );
+            applyServePayload(payload);
+          }
+        } catch (err) {
+          showBanner(err.message || "Unable to log receive pass.", true);
+        }
+        return;
+      }
+
       try {
         showBanner("", false);
         const payload = await postServe(
