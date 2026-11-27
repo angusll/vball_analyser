@@ -604,3 +604,78 @@ def test_receive_shank_without_setter_contact_scores_0(tmp_path: Path) -> None:
     assert ev.receive_score == 0
     assert ev.pass_x_m is None
     assert ev.pass_y_m is None
+
+
+def test_filters_stationary_background_fp_and_ignores_bystander_during_rising_pass(tmp_path: Path) -> None:
+    """Stationary gym-wall FPs must not create fake serves, and rising passes must not lock onto bystanders."""
+    video_path, cal, base_predictor, meta = _build_receive_pass_scenario(
+        tmp_path, "static_fp_bystander.mp4", setter_court_xy=(5.5, 1.2)
+    )
+    _H, H_inv = compute_court_homography(cal)
+    p1_px = project_court_to_image(H_inv, 1.8, 6.2)
+
+    # Inject a stationary false-positive wall light on frames 0..24 (higher conf than early noise, spanning >0.8s)
+    noisy_balls = list(base_predictor._balls)
+    for i in range(0, 25):
+        noisy_balls.append(
+            BallDetection(frame_idx=i, timestamp_s=round(i / meta.fps, 4), x=1003.5, y=185.5, conf=0.35)
+        )
+
+    # Add a front-row bystander standing visually along the rising pass path (before apex)
+    bystander_px = project_court_to_image(H_inv, 4.9, 2.4)
+    bystander_frames = [
+        _make_pose_frame(i, round(i / meta.fps, 4), bystander_px[0], bystander_px[1])
+        for i in range(meta.frame_count)
+    ]
+    tracks = list(base_predictor._tracks) + [
+        PlayerTrack(track_id=50, court_side="attacking", frames=bystander_frames)
+    ]
+
+    events = detect_serve_events(video_path, cal, FakeServePredictor(noisy_balls, tracks), meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.passer_label == "P2"
+    assert ev.receive_score == 3
+    assert ev.pass_x_m == pytest.approx(5.5, abs=0.2)
+    assert ev.pass_y_m == pytest.approx(1.2, abs=0.2)
+
+
+def test_continuous_long_rally_beyond_cooldown_does_not_double_record(tmp_path: Path) -> None:
+    """An ongoing rally (>6s after serve #1 with continuous ball flight and no dead-ball gap) logs only 1 serve."""
+    video_path = tmp_path / "long_rally_single_serve.mp4"
+    fps = 15.0
+    duration_s = 12.0
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+    p2_px = project_court_to_image(H_inv, 4.5, 6.2)
+
+    n_frames = int(fps * duration_s)
+    p2_frames = [_make_pose_frame(i, round(i / fps, 4), p2_px[0], p2_px[1]) for i in range(n_frames)]
+    balls: list[BallDetection] = []
+
+    # Real serve #1 received at t=1.6s (frame 24)
+    for i in range(10, 25):
+        u = (i - 10) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=150.0 + u * (310.0 - 150.0), conf=0.9))
+    for i in range(25, 34):
+        u = (i - 24) / 9.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=310.0 - u * 160.0, conf=0.9))
+
+    # Continuous rally activity every ~1.2s (no >=2.2s dead-ball gap)
+    for f_idx in (50, 68, 86, 104, 120):
+        balls.append(BallDetection(frame_idx=f_idx, timestamp_s=round(f_idx / fps, 4), x=520.0, y=120.0, conf=0.8))
+
+    # Rally return descending at t=9.6s (frame 144, >6s after serve #1) -> must NOT be logged as serve #2
+    for i in range(130, 145):
+        u = (i - 130) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=140.0 + u * (310.0 - 140.0), conf=0.9))
+    for i in range(145, 152):
+        u = (i - 144) / 7.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=310.0 - u * 120.0, conf=0.9))
+
+    tracks = [PlayerTrack(track_id=2, court_side="attacking", frames=p2_frames)]
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=n_frames, duration_s=duration_s, codec="h264")
+    events = detect_serve_events(video_path, cal, FakeServePredictor(balls, tracks), meta)
+    assert len(events) == 1
+    assert events[0].timestamp_s is not None and abs(events[0].timestamp_s - 1.6) < 0.25

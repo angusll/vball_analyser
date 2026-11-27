@@ -33,6 +33,7 @@ from vball_analyser.video_io import iter_video_frames
 
 REFRACTORY_GAP_S = 2.5
 POST_RECEIVE_COOLDOWN_S = 6.0
+RALLY_BREAK_MIN_GAP_S = 2.2
 MIN_DESCENT_PX = 45.0
 MIN_DESCENT_DURATION_S = 0.20
 PRE_SERVE_OFFSET_S = 0.60
@@ -79,10 +80,49 @@ def _proxy_net_calibration(cal: CourtCalibration) -> NetCalibration:
     )
 
 
-def _select_best_ball_series(detections: list[BallDetection]) -> list[BallDetection]:
-    """Pick highest-confidence ball per frame and drop isolated spatial teleport outliers."""
-    by_frame: dict[int, BallDetection] = {}
+def _filter_stationary_background(detections: list[BallDetection]) -> list[BallDetection]:
+    """Drop repeated static background false positives (e.g. gym lights/clocks stuck within <=8px)."""
+    if len(detections) < 10:
+        return detections
+
+    clusters: list[list[BallDetection]] = []
+    anchors: list[tuple[float, float]] = []
     for d in detections:
+        if d.conf < 0.16:
+            continue
+        placed = False
+        for idx, (ax, ay) in enumerate(anchors):
+            if math.hypot(d.x - ax, d.y - ay) <= 8.0:
+                clusters[idx].append(d)
+                placed = True
+                break
+        if not placed:
+            anchors.append((d.x, d.y))
+            clusters.append([d])
+
+    static_anchors: list[tuple[float, float]] = []
+    for anchor, members in zip(anchors, clusters):
+        if len(members) < 10:
+            continue
+        times = [m.timestamp_s for m in members]
+        if (max(times) - min(times)) >= 0.8:
+            static_anchors.append(anchor)
+
+    if not static_anchors:
+        return detections
+
+    return [
+        d
+        for d in detections
+        if not any(math.hypot(d.x - ax, d.y - ay) <= 8.0 for ax, ay in static_anchors)
+    ]
+
+
+def _select_best_ball_series(detections: list[BallDetection]) -> list[BallDetection]:
+    """Pick highest-confidence ball per frame, dropping static background FPs and isolated teleport outliers."""
+    filtered = _filter_stationary_background(detections)
+    by_frame: dict[int, BallDetection] = {}
+    for d in filtered:
         if d.conf < 0.16:
             continue
         prev = by_frame.get(d.frame_idx)
@@ -131,15 +171,23 @@ def _find_serve_landing_balls(
 
     while i < n - 1:
         # Look for a descending run starting above/near the net centerline
-        if series[i].y <= series[i - 1].y:
+        init_dt = max(1e-3, series[i].timestamp_s - series[i - 1].timestamp_s)
+        init_dist = math.hypot(series[i].x - series[i - 1].x, series[i].y - series[i - 1].y)
+        if series[i].y <= series[i - 1].y or init_dt > max_gap_s or init_dist > max(140.0, 1800.0 * init_dt):
             i += 1
             continue
 
         run_start = i - 1
         j = i
-        # Follow descent while allowing brief 1-frame plateaus/jitter
+        # Follow descent while enforcing spatial continuity and allowing brief 1-frame plateaus/jitter
         while j < n:
-            if series[j].y >= series[j - 1].y - 3.0 and (series[j].timestamp_s - series[j - 1].timestamp_s) <= max_gap_s:
+            dt = max(1e-3, series[j].timestamp_s - series[j - 1].timestamp_s)
+            step_dist = math.hypot(series[j].x - series[j - 1].x, series[j].y - series[j - 1].y)
+            if (
+                series[j].y >= series[j - 1].y - 3.0
+                and dt <= max_gap_s
+                and step_dist <= max(140.0, 1800.0 * dt)
+            ):
                 j += 1
             else:
                 break
@@ -153,11 +201,16 @@ def _find_serve_landing_balls(
         # Serve starts high (above/near net) and descends below the net top tape to either
         # a chest/overhead pass rebound or a floor bounce.
         started_high = start_b.y <= net_center_y + 25.0
-        has_rebound = (
-            run_end + 1 < n
-            and (series[run_end + 1].timestamp_s - end_b.timestamp_s) <= max_gap_s
-            and series[run_end + 1].y < end_b.y - 2.0
-        )
+        has_rebound = False
+        if run_end + 1 < n:
+            nxt_b = series[run_end + 1]
+            reb_dt = max(1e-3, nxt_b.timestamp_s - end_b.timestamp_s)
+            reb_dist = math.hypot(nxt_b.x - end_b.x, nxt_b.y - end_b.y)
+            has_rebound = (
+                reb_dt <= max_gap_s
+                and reb_dist <= max(140.0, 1800.0 * reb_dt)
+                and nxt_b.y < end_b.y - 2.0
+            )
         below_tape = end_b.y >= tape_y + 15.0
         at_floor = end_b.y >= net_center_y - 15.0
 
@@ -339,6 +392,13 @@ def _trace_pass_to_setter(
     went_above_net = any(b.y < net_tape_y - 10.0 for b in post_balls)
     min_contact_t = land_ball.timestamp_s + MIN_PASS_FLIGHT_S
 
+    # Find the pass apex (highest point = minimum y) in the initial flight so we ignore
+    # mid-flight rising frames where the ball visually passes near another passer/bystander.
+    apex_search = [b for b in post_balls if b.timestamp_s <= land_ball.timestamp_s + 1.8]
+    apex_ball = min(apex_search, key=lambda b: b.y) if apex_search else post_balls[0]
+    has_clear_arc = apex_ball.y < land_ball.y - 30.0
+    apex_t = apex_ball.timestamp_s
+
     # Candidate tuple: (ball, track_id, cx, cy, upper_dist, is_inflection)
     other_candidates: list[tuple[BallDetection, int, float, float, float, bool]] = []
     same_candidates: list[tuple[BallDetection, int, float, float, float, bool]] = []
@@ -349,20 +409,31 @@ def _trace_pass_to_setter(
             continue
 
         inflection = _is_trajectory_inflection(post_balls, idx)
+        vy_in = 0.0
+        if idx > 0:
+            prev_b = post_balls[idx - 1]
+            dt_prev = max(1e-3, b.timestamp_s - prev_b.timestamp_s)
+            vy_in = (b.y - prev_b.y) / dt_prev
+
+        # Skip frames while the pass is still rising toward its apex
+        if has_clear_arc and b.timestamp_s < apex_t and not inflection:
+            continue
+        if vy_in < -40.0 and not inflection:
+            continue
+
         for tr in tracks:
             fr = _nearest_pose_frame(tr, b.timestamp_s, max_delta_s=0.18)
             if fr is None:
                 continue
 
             if tr.court_side == "blocking":
-                if went_above_net and first_blocker_t is None:
+                if went_above_net and first_blocker_t is None and (inflection or vy_in >= -10.0):
                     bx1, by1, bx2, by2 = fr.bbox
-                    bpad = 40.0
+                    bpad = 22.0
                     bdx = max(bx1 - bpad - b.x, 0.0, b.x - (bx2 + bpad))
                     bdy = max(by1 - bpad - b.y, 0.0, b.y - (by2 + bpad))
                     bbox_dist = math.hypot(bdx, bdy)
-                    bcenter_dist = math.hypot(b.x - 0.5 * (bx1 + bx2), b.y - 0.5 * (by1 + by2))
-                    if bbox_dist <= 45.0 or bcenter_dist <= 95.0:
+                    if bbox_dist <= 28.0:
                         first_blocker_t = b.timestamp_s
                 continue
 
@@ -370,24 +441,23 @@ def _trace_pass_to_setter(
                 continue
 
             fx, fy = extract_foot_point(fr)
-            if fy <= net_center_y + 10.0:
+            if fy <= net_center_y - 4.0:
                 continue
             try:
                 cx, cy = project_image_to_court(H, fx, fy)
             except ValueError:
                 continue
-            if not (-1.5 <= cx <= 10.5 and -0.5 <= cy <= 10.5):
+            if not (-1.5 <= cx <= 10.5 and -0.3 <= cy <= 10.5):
                 continue
 
             x1, y1, x2, y2 = fr.bbox
-            pad = 50.0
+            pad = 25.0
             dx = max(x1 - pad - b.x, 0.0, b.x - (x2 + pad))
             dy = max(y1 - pad - b.y, 0.0, b.y - (y2 + pad))
             box_dist = math.hypot(dx, dy)
-            center_dist = math.hypot(b.x - 0.5 * (x1 + x2), b.y - 0.5 * (y1 + y2))
-            if box_dist <= 55.0 or center_dist <= 115.0:
-                ux, uy = _upper_body_contact_point(fr)
-                upper_dist = math.hypot(b.x - ux, b.y - uy)
+            ux, uy = _upper_body_contact_point(fr)
+            upper_dist = math.hypot(b.x - ux, b.y - uy)
+            if box_dist <= 35.0 or upper_dist <= 85.0:
                 cand = (b, tr.track_id, cx, cy, upper_dist, inflection)
                 if tr.track_id != receiver_track_id:
                     other_candidates.append(cand)
@@ -463,6 +533,24 @@ def _extract_candidate_windows(
     return merged
 
 
+def _has_rally_break(
+    series: list[BallDetection],
+    prev_receive_t: float,
+    candidate_t: float,
+    *,
+    min_gap_s: float = RALLY_BREAK_MIN_GAP_S,
+) -> bool:
+    """Return True if there was a dead-ball pause (>= min_gap_s) between prev_receive_t and candidate_t."""
+    start_t = prev_receive_t + 0.5
+    end_t = candidate_t - 0.6
+    if end_t - start_t < min_gap_s:
+        return False
+    mid_times = [b.timestamp_s for b in series if start_t < b.timestamp_s < end_t]
+    checkpoints = [start_t, *mid_times, end_t]
+    max_gap = max(checkpoints[i] - checkpoints[i - 1] for i in range(1, len(checkpoints)))
+    return max_gap >= min_gap_s
+
+
 def detect_serve_events(
     video_path: Path,
     calibration: CourtCalibration,
@@ -481,6 +569,7 @@ def detect_serve_events(
     windows = _extract_candidate_windows(video_path, metadata, net_cal, predictor, net_center_y, net_tape_y)
     events: list[ServeEvent] = []
     next_allowed_t = -1e9
+    last_received_t: float | None = None
 
     for w_start, w_end in windows:
         frames = list(iter_video_frames(video_path, start_s=w_start, end_s=w_end))
@@ -493,6 +582,8 @@ def detect_serve_events(
 
         for land_ball in landings:
             if land_ball.timestamp_s < next_allowed_t:
+                continue
+            if last_received_t is not None and not _has_rally_break(series, last_received_t, land_ball.timestamp_s):
                 continue
 
             t_pre = max(w_start, land_ball.timestamp_s - PRE_SERVE_OFFSET_S)
@@ -590,5 +681,7 @@ def detect_serve_events(
             )
             cooldown = POST_RECEIVE_COOLDOWN_S if receiver is not None else REFRACTORY_GAP_S
             next_allowed_t = land_ball.timestamp_s + cooldown
+            if receiver is not None:
+                last_received_t = land_ball.timestamp_s
 
     return events
