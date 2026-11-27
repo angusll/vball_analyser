@@ -30,8 +30,8 @@ class AppConfig:
     short_clip_max_sec: float = 20.0
     default_net_height_m: float = 2.43
     net_width_m: float = 9.0
-    bind_host: str = "127.0.0.1"
-    default_port: int = 8081
+    bind_host: str = field(default_factory=lambda: os.environ.get("VBALL_HOST", "127.0.0.1"))
+    default_port: int = field(default_factory=lambda: int(os.environ.get("VBALL_PORT", "8081")))
     session_ttl_seconds: int = 28800
     rate_limit_requests: int = 300
     rate_limit_window_s: float = 60.0

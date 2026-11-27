@@ -1,0 +1,23 @@
+services:
+  vball-analyser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GPU: "${VBALL_GPU:-false}"
+    image: vball-analyser:${VBALL_IMAGE_TAG:-latest}
+    ports:
+      - "${VBALL_PORT:-8081}:8081"
+    environment:
+      VBALL_HOST: "0.0.0.0"
+      VBALL_PORT: "8081"
+      VBALL_DATA_DIR: "/app/data"
+      VBALL_MODELS_DIR: "/app/models"
+      VBALL_SECRET_FILE: "/app/data/.vball_secret"
+      VBALL_ALLOWED_LOCAL_DIRS: "/app/data:/videos"
+      VBALL_DEVICE: "${VBALL_DEVICE:-}"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - "${VBALL_VIDEOS_DIR:-./data}:/videos:ro"
+    restart: unless-stopped

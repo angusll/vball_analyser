@@ -72,6 +72,36 @@ uv run yolo export model=models/yolo11m-pose.pt format=engine half=True dynamic=
 
 `YoloGpuPredictor` automatically prefers matching `.engine` files when `tensorrt` is installed and falls back to `.pt` with a warning if an engine fails to load.
 
+### Docker (CPU & `--gpu` Flag)
+
+Run with the helper script (CPU by default, or pass `--gpu` for NVIDIA CUDA + TensorRT):
+
+```bash
+# CPU mode
+./scripts/docker-run.sh
+
+# NVIDIA GPU mode (requires NVIDIA Container Toolkit)
+./scripts/docker-run.sh --gpu
+
+# Optional: mount a host videos folder at /videos and expose a custom port
+./scripts/docker-run.sh --gpu --port 8081 --videos-dir /path/to/videos
+```
+
+Or run `docker` / `docker compose` directly:
+
+```bash
+# Build & run with GPU flag
+docker build --build-arg GPU=true -t vball-analyser:gpu .
+docker run --rm --gpus all -p 8081:8081 \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/models:/app/models" \
+  vball-analyser:gpu
+
+# Docker Compose (CPU vs GPU)
+docker compose up --build
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
 ## Studio Controls & Shortcuts
 
 - **Load Video:** Upload a clip (`.mp4`, `.mov`, `.mkv`, `.avi`) or enter a local filesystem path for large uncut recordings.
@@ -89,6 +119,8 @@ uv run yolo export model=models/yolo11m-pose.pt format=engine half=True dynamic=
 | `VBALL_DATA_DIR` | `./data` | Directory for cached sessions, thumbnails, proxies, and MP4 exports |
 | `VBALL_MODELS_DIR` | `./models` | Directory where YOLO `.pt` weights and optional `.engine` / CoreML / OpenVINO exports are stored |
 | `VBALL_DEVICE` | Auto-detected (`cuda` / `mps` / `xpu` / `cpu`) | Override inference device selection |
+| `VBALL_HOST` | `127.0.0.1` (`0.0.0.0` in Docker) | Bind host address for the FastAPI server |
+| `VBALL_PORT` | `8081` | Bind port for the FastAPI server |
 | `VBALL_ALLOWED_LOCAL_DIRS` | Project root & `$HOME` | Path-separator-delimited directories permitted for local disk video loading |
 | `VBALL_MAX_UPLOAD_BYTES` | `2147483648` (2 GiB) | Maximum allowed HTTP upload size |
 | `VBALL_SECRET_KEY` | Auto-generated in `.vball_secret` | Secret key for signing local session cookies and CSRF tokens |

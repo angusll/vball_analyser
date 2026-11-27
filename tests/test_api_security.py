@@ -193,3 +193,17 @@ def test_static_frontend_and_backend_security_hygiene() -> None:
     for py_file in src_dir.glob("*.py"):
         text = py_file.read_text(encoding="utf-8")
         assert "0.0.0.0" not in text, f"Server must never bind 0.0.0.0 ({py_file.name})"
+
+
+def test_app_config_host_port_env_override(monkeypatch) -> None:
+    monkeypatch.delenv("VBALL_HOST", raising=False)
+    monkeypatch.delenv("VBALL_PORT", raising=False)
+    default_cfg = AppConfig()
+    assert default_cfg.bind_host == "127.0.0.1"
+    assert default_cfg.default_port == 8081
+
+    monkeypatch.setenv("VBALL_HOST", "0.0.0.0")
+    monkeypatch.setenv("VBALL_PORT", "9090")
+    override_cfg = AppConfig()
+    assert override_cfg.bind_host == "0.0.0.0"
+    assert override_cfg.default_port == 9090
