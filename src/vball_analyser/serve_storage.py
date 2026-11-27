@@ -17,6 +17,7 @@ from vball_analyser.serve_geometry import (
     compute_court_homography,
     default_passer_formation,
     normalize_court_calibration,
+    normalize_receive_ring_radii,
     score_receive,
 )
 from vball_analyser.storage import validate_safe_id
@@ -120,6 +121,7 @@ class ServeSessionStore:
         servers: list[str] | None = None,
         default_passers: list[PasserPosition] | None = None,
         setter_target: Point2D | None = None,
+        receive_ring_radii_m: tuple[float, float, float] | None = None,
     ) -> ServeSession:
         session = self.load_session(serve_session_id)
         if name is not None:
@@ -159,9 +161,14 @@ class ServeSessionStore:
                 s.depth = depth
                 s.is_seam = is_seam
                 s.seam_pair = seam_pair
+        recompute_receive = False
         if setter_target is not None:
-            clamped_target = clamp_setter_target(setter_target)
-            session.setter_target = clamped_target
+            session.setter_target = clamp_setter_target(setter_target)
+            recompute_receive = True
+        if receive_ring_radii_m is not None:
+            session.receive_ring_radii_m = normalize_receive_ring_radii(receive_ring_radii_m)
+            recompute_receive = True
+        if recompute_receive:
             for s in session.serves:
                 if (
                     s.pass_x_m is not None
@@ -169,7 +176,13 @@ class ServeSessionStore:
                     and not s.receive_score_manual
                     and s.result == "in"
                 ):
-                    dist, auto_score = score_receive(s.pass_x_m, s.pass_y_m, "in", clamped_target)
+                    dist, auto_score = score_receive(
+                        s.pass_x_m,
+                        s.pass_y_m,
+                        "in",
+                        session.setter_target,
+                        ring_radii_m=session.receive_ring_radii_m,
+                    )
                     s.pass_distance_m = dist
                     s.receive_score = auto_score
         self.save_session(session)
@@ -231,7 +244,9 @@ class ServeSessionStore:
                     raise ValueError("Pass destination coordinates must be finite numbers.")
                 px = round(float(pass_x_m), 3)
                 py = round(float(pass_y_m), 3)
-                dist, auto_score = score_receive(px, py, "in", session.setter_target)
+                dist, auto_score = score_receive(
+                    px, py, "in", session.setter_target, ring_radii_m=session.receive_ring_radii_m
+                )
                 if receive_score is not None:
                     score = receive_score
                     score_manual = receive_score != auto_score
@@ -352,7 +367,11 @@ class ServeSessionStore:
                     and not target.receive_score_manual
                 ):
                     dist, auto_score = score_receive(
-                        target.pass_x_m, target.pass_y_m, "in", session.setter_target
+                        target.pass_x_m,
+                        target.pass_y_m,
+                        "in",
+                        session.setter_target,
+                        ring_radii_m=session.receive_ring_radii_m,
                     )
                     target.pass_distance_m = dist
                     target.receive_score = auto_score
@@ -381,7 +400,9 @@ class ServeSessionStore:
                 py = round(float(pass_y_m), 3)
                 target.pass_x_m = px
                 target.pass_y_m = py
-                dist, auto_score = score_receive(px, py, target.result, session.setter_target)
+                dist, auto_score = score_receive(
+                    px, py, target.result, session.setter_target, ring_radii_m=session.receive_ring_radii_m
+                )
                 target.pass_distance_m = dist
                 target.receive_score = auto_score
                 target.receive_score_manual = False
@@ -391,7 +412,11 @@ class ServeSessionStore:
             if receive_score is None:
                 target.receive_score_manual = False
                 dist, auto_score = score_receive(
-                    target.pass_x_m, target.pass_y_m, target.result, session.setter_target
+                    target.pass_x_m,
+                    target.pass_y_m,
+                    target.result,
+                    session.setter_target,
+                    ring_radii_m=session.receive_ring_radii_m,
                 )
                 target.pass_distance_m = dist
                 target.receive_score = auto_score

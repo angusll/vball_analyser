@@ -560,6 +560,7 @@ def detect_serve_events(
     metadata: VideoMetadata,
     server_name: str = "Unassigned",
     setter_target: Point2D | None = None,
+    ring_radii_m: tuple[float, float, float] | None = None,
 ) -> list[ServeEvent]:
     """Detect serve events in video_path and project landing spots, passers & receive quality onto court meters."""
     H, _H_inv = compute_court_homography(calibration)
@@ -641,15 +642,15 @@ def detect_serve_events(
                 if setter_contact is not None:
                     pass_x_m, pass_y_m, pass_timestamp_s, pass_frame_idx = setter_contact
                     pass_distance_m, receive_score = score_receive(
-                        pass_x_m, pass_y_m, "in", setter_target
+                        pass_x_m, pass_y_m, "in", setter_target, ring_radii_m=ring_radii_m
                     )
                 else:
                     pass_distance_m, receive_score = score_receive(
-                        None, None, "in", setter_target, unplayable=True
+                        None, None, "in", setter_target, ring_radii_m=ring_radii_m, unplayable=True
                     )
             elif norm_res == "ace":
                 pass_distance_m, receive_score = score_receive(
-                    None, None, "ace", setter_target
+                    None, None, "ace", setter_target, ring_radii_m=ring_radii_m
                 )
             else:
                 pass_distance_m, receive_score = score_receive(

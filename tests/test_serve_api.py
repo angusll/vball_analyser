@@ -338,6 +338,25 @@ def test_receive_quality_api_endpoints_and_server_filter(tmp_path: Path) -> None
             headers=hdr,
         )
         assert upd_sess.status_code == 200
+        assert upd_sess.json()["session"]["serves"][0]["receive_score"] == 0
+
+        # Resize scoring rings via /update -> enlarges red/yellow/green rings and recomputes s1 score
+        upd_rings = client.post(
+            f"/api/serve-sessions/{sid}/update",
+            json={"setter_target": {"x": 6.0, "y": 0.8}, "receive_ring_radii_m": [0.1, 0.2, 1.0]},
+            headers=hdr,
+        )
+        assert upd_rings.status_code == 200
+        assert upd_rings.json()["session"]["receive_ring_radii_m"] == [0.4, 0.7, 1.0]
+        assert upd_rings.json()["session"]["serves"][0]["receive_score"] == 3
+
+        # Restore setter_target to (0.5, 0.2) and default rings so subsequent assertions stay unchanged
+        upd_sess = client.post(
+            f"/api/serve-sessions/{sid}/update",
+            json={"setter_target": {"x": 0.2, "y": 0.1}, "receive_ring_radii_m": [1.5, 3.2, 4.8]},
+            headers=hdr,
+        )
+        assert upd_sess.status_code == 200
         assert upd_sess.json()["session"]["setter_target"] == {"x": 0.5, "y": 0.2}
         assert upd_sess.json()["session"]["serves"][0]["receive_score"] == 0
         assert upd_sess.json()["receive_summary"]["avg_rating"] == 0.0

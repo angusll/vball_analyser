@@ -121,6 +121,12 @@
     receiveScoredBadge: document.getElementById("receiveScoredBadge"),
     receiveSummaryCards: document.getElementById("receiveSummaryCards"),
     receiveScoreBars: document.getElementById("receiveScoreBars"),
+    ringRadius3: document.getElementById("ringRadius3"),
+    ringRadius2: document.getElementById("ringRadius2"),
+    ringRadius1: document.getElementById("ringRadius1"),
+    ringRadius3Val: document.getElementById("ringRadius3Val"),
+    ringRadius2Val: document.getElementById("ringRadius2Val"),
+    ringRadius1Val: document.getElementById("ringRadius1Val"),
     receivePasserSection: document.getElementById("receivePasserSection"),
     receivePasserTable: document.getElementById("receivePasserTable"),
     resultModeGroup: document.getElementById("resultModeGroup"),
@@ -187,13 +193,71 @@
     return { x: DEFAULT_SETTER_TARGET.x, y: DEFAULT_SETTER_TARGET.y };
   }
 
+  function getRingRadii() {
+    const r = sState.session && sState.session.receive_ring_radii_m;
+    if (Array.isArray(r) && r.length === 3 && r.every((v) => typeof v === "number" && Number.isFinite(v))) {
+      return [r[0], r[1], r[2]];
+    }
+    return [RECEIVE_RING_RADII_M[3], RECEIVE_RING_RADII_M[2], RECEIVE_RING_RADII_M[1]];
+  }
+
+  function normalizeLocalRingRadii(radii, changedIdx) {
+    let [r3, r2, r1] = radii.map((v) => Number(v));
+    if (changedIdx === 0) {
+      r3 = Math.max(0.4, Math.min(4.0, r3));
+      r2 = Math.max(r3 + 0.3, Math.min(6.5, r2));
+      r1 = Math.max(r2 + 0.3, Math.min(8.5, r1));
+    } else if (changedIdx === 1) {
+      r2 = Math.max(0.7, Math.min(6.5, r2));
+      if (r3 > r2 - 0.3) r3 = Math.max(0.4, r2 - 0.3);
+      r2 = Math.max(r3 + 0.3, r2);
+      r1 = Math.max(r2 + 0.3, Math.min(8.5, r1));
+    } else if (changedIdx === 2) {
+      r1 = Math.max(1.0, Math.min(8.5, r1));
+      if (r2 > r1 - 0.3) r2 = Math.max(0.7, r1 - 0.3);
+      if (r3 > r2 - 0.3) r3 = Math.max(0.4, r2 - 0.3);
+      r2 = Math.max(r3 + 0.3, r2);
+      r1 = Math.max(r2 + 0.3, r1);
+    } else {
+      r3 = Math.max(0.4, Math.min(4.0, r3));
+      r2 = Math.max(r3 + 0.3, Math.min(6.5, r2));
+      r1 = Math.max(r2 + 0.3, Math.min(8.5, r1));
+    }
+    return [
+      Math.round(r3 * 100) / 100,
+      Math.round(r2 * 100) / 100,
+      Math.round(r1 * 100) / 100,
+    ];
+  }
+
+  function syncRingSliders() {
+    const [r3, r2, r1] = getRingRadii();
+    if (sEls.ringRadius3) sEls.ringRadius3.value = String(r3);
+    if (sEls.ringRadius2) sEls.ringRadius2.value = String(r2);
+    if (sEls.ringRadius1) sEls.ringRadius1.value = String(r1);
+    if (sEls.ringRadius3Val) sEls.ringRadius3Val.textContent = `${r3.toFixed(1)}m`;
+    if (sEls.ringRadius2Val) sEls.ringRadius2Val.textContent = `${r2.toFixed(1)}m`;
+    if (sEls.ringRadius1Val) sEls.ringRadius1Val.textContent = `${r1.toFixed(1)}m`;
+  }
+
   function computeLocalReceiveScore(passX, passY, target) {
     if (passY < 0) return 0;
+    const [r3, r2, r1] = getRingRadii();
     const d = Math.hypot(passX - target.x, passY - target.y);
-    if (d <= RECEIVE_RING_RADII_M[3]) return 3;
-    if (d <= RECEIVE_RING_RADII_M[2]) return 2;
-    if (d <= RECEIVE_RING_RADII_M[1]) return 1;
+    if (d <= r3) return 3;
+    if (d <= r2) return 2;
+    if (d <= r1) return 1;
     return 0;
+  }
+
+  function refreshLocalReceiveScores() {
+    if (!sState.session || !Array.isArray(sState.session.serves)) return;
+    const target = getSetterTarget();
+    for (const sv of sState.session.serves) {
+      if (sv.result === "in" && sv.pass_x_m != null && sv.pass_y_m != null && !sv.receive_score_manual) {
+        sv.receive_score = computeLocalReceiveScore(sv.pass_x_m, sv.pass_y_m, target);
+      }
+    }
   }
 
   function setServeMode(mode) {
@@ -609,14 +673,16 @@
     ctx.rect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
     ctx.clip();
 
+    const [r3, r2, r1] = getRingRadii();
     const rings = [
-      { score: "1", r: RECEIVE_RING_RADII_M[1], fill: "rgba(239, 68, 68, 0.22)", stroke: "rgba(239, 68, 68, 0.78)", labelColor: "rgba(252, 165, 165, 0.9)", labelDist: 4.0 },
-      { score: "2", r: RECEIVE_RING_RADII_M[2], fill: "rgba(234, 179, 8, 0.26)", stroke: "rgba(234, 179, 8, 0.84)", labelColor: "rgba(253, 224, 71, 0.92)", labelDist: 2.35 },
-      { score: "3", r: RECEIVE_RING_RADII_M[3], fill: "rgba(34, 197, 94, 0.30)", stroke: "rgba(34, 197, 94, 0.88)", labelColor: "rgba(134, 239, 172, 0.95)", labelDist: 0.95 },
+      { idx: 2, score: "1", r: r1, fill: "rgba(239, 68, 68, 0.22)", stroke: "rgba(239, 68, 68, 0.78)", handleColor: "#ef4444", labelColor: "rgba(252, 165, 165, 0.9)", labelDist: 0.5 * (r2 + r1) },
+      { idx: 1, score: "2", r: r2, fill: "rgba(234, 179, 8, 0.26)", stroke: "rgba(234, 179, 8, 0.84)", handleColor: "#eab308", labelColor: "rgba(253, 224, 71, 0.92)", labelDist: 0.5 * (r3 + r2) },
+      { idx: 0, score: "3", r: r3, fill: "rgba(34, 197, 94, 0.30)", stroke: "rgba(34, 197, 94, 0.88)", handleColor: "#22c55e", labelColor: "rgba(134, 239, 172, 0.95)", labelDist: r3 * 0.62 },
     ];
 
     for (const ring of rings) {
       const rPx = ring.r * tf.scale;
+      const isDraggingRing = sState.dragTarget && sState.dragTarget.type === "ring" && sState.dragTarget.ringIdx === ring.idx;
       // Repaint base court color inside each inner circle so semi-transparent tints stay pure
       ctx.fillStyle = "#142642";
       ctx.beginPath();
@@ -628,13 +694,14 @@
       ctx.arc(tPx.x, tPx.y, rPx, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.strokeStyle = ring.stroke;
-      ctx.lineWidth = 1.8;
+      ctx.strokeStyle = isDraggingRing ? "#ffffff" : ring.stroke;
+      ctx.lineWidth = isDraggingRing ? 2.8 : 1.8;
       ctx.stroke();
     }
 
     // Subtle ring score labels (3, 2, 1) along lower-left diagonal from setter target
     const labelAngle = Math.PI * 0.65;
+    const handleAngle = Math.PI * 0.78;
     ctx.font = "700 13px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -644,6 +711,18 @@
       const lPx = tf.toPx(lx, ly);
       ctx.fillStyle = ring.labelColor;
       ctx.fillText(ring.score, lPx.x, lPx.y);
+
+      // Subtle resize handle knob on each ring's edge
+      const hx = target.x + Math.cos(handleAngle) * ring.r;
+      const hy = target.y + Math.sin(handleAngle) * ring.r;
+      const hPx = tf.toPx(hx, hy);
+      ctx.fillStyle = ring.handleColor;
+      ctx.strokeStyle = "#090d16";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(hPx.x, hPx.y, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
 
     // Subtle "0" label in unshaded court area
@@ -879,6 +958,7 @@
     }
 
     // Receive Quality Summary
+    syncRingSliders();
     const rSum = sState.receiveSummary;
     if (sEls.receiveScoredBadge) {
       sEls.receiveScoredBadge.textContent = String(rSum ? rSum.scored_count : 0);
@@ -1519,11 +1599,47 @@
           showBanner("", false);
           const payload = await postServe(
             `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
-            { setter_target: { x: DEFAULT_SETTER_TARGET.x, y: DEFAULT_SETTER_TARGET.y } }
+            {
+              setter_target: { x: DEFAULT_SETTER_TARGET.x, y: DEFAULT_SETTER_TARGET.y },
+              receive_ring_radii_m: [RECEIVE_RING_RADII_M[3], RECEIVE_RING_RADII_M[2], RECEIVE_RING_RADII_M[1]],
+            }
           );
           applyServePayload(payload);
         } catch (err) {
           showBanner(err.message || "Unable to reset setter target.", true);
+        }
+      });
+    }
+
+    // Scoring ring radius sliders (live preview on input, persist on change)
+    const ringSliders = [
+      { el: sEls.ringRadius3, idx: 0 },
+      { el: sEls.ringRadius2, idx: 1 },
+      { el: sEls.ringRadius1, idx: 2 },
+    ];
+    for (const item of ringSliders) {
+      if (!item.el) continue;
+      item.el.addEventListener("input", () => {
+        if (!sState.session) return;
+        const cur = getRingRadii();
+        cur[item.idx] = parseFloat(item.el.value);
+        sState.session.receive_ring_radii_m = normalizeLocalRingRadii(cur, item.idx);
+        syncRingSliders();
+        refreshLocalReceiveScores();
+        renderCourt();
+      });
+      item.el.addEventListener("change", async () => {
+        if (!sState.session) return;
+        try {
+          showBanner("", false);
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+            { receive_ring_radii_m: getRingRadii() }
+          );
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Unable to update scoring ring sizes.", true);
+          await refreshCurrentSession();
         }
       });
     }
@@ -1700,6 +1816,27 @@
             return;
           }
         }
+
+        // Hit-test concentric scoring ring perimeters (drag to resize)
+        const { x_m: clickXm, y_m: clickYm } = tf.toCourt(pos.x, pos.y);
+        if (clickXm >= 0 && clickXm <= COURT_W && clickYm >= 0 && clickYm <= COURT_L) {
+          const distPx = Math.hypot(pos.x - tPx.x, pos.y - tPx.y);
+          const radii = getRingRadii();
+          let bestIdx = -1;
+          let bestDelta = 10;
+          for (let i = 0; i < radii.length; i++) {
+            const delta = Math.abs(distPx - radii[i] * tf.scale);
+            if (delta <= bestDelta) {
+              bestDelta = delta;
+              bestIdx = i;
+            }
+          }
+          if (bestIdx !== -1) {
+            sState.dragTarget = { type: "ring", ringIdx: bestIdx, startX: pos.x, startY: pos.y, moved: false };
+            sEls.courtCanvas.setPointerCapture(ev.pointerId);
+            return;
+          }
+        }
         return;
       }
 
@@ -1733,12 +1870,27 @@
     });
 
     sEls.courtCanvas.addEventListener("pointermove", (ev) => {
-      if (!sState.dragTarget || !sState.session) return;
+      if (!sState.session) return;
       const pos = canvasPointerPos(sEls.courtCanvas, ev);
+      const tf = courtTransform(sEls.courtCanvas.clientWidth, sEls.courtCanvas.clientHeight);
+
+      if (!sState.dragTarget) {
+        if (sState.mode === "receive") {
+          const target = getSetterTarget();
+          const tPx = tf.toPx(target.x, target.y);
+          const distPx = Math.hypot(pos.x - tPx.x, pos.y - tPx.y);
+          const radii = getRingRadii();
+          const nearRing = radii.some((r) => Math.abs(distPx - r * tf.scale) <= 10);
+          sEls.courtCanvas.style.cursor = distPx <= 15 ? "grab" : nearRing ? "ew-resize" : "crosshair";
+        } else {
+          sEls.courtCanvas.style.cursor = "crosshair";
+        }
+        return;
+      }
+
       if (!sState.dragTarget.moved && Math.hypot(pos.x - sState.dragTarget.startX, pos.y - sState.dragTarget.startY) <= 4) {
         return;
       }
-      const tf = courtTransform(sEls.courtCanvas.clientWidth, sEls.courtCanvas.clientHeight);
       const { x_m, y_m } = tf.toCourt(pos.x, pos.y);
       sState.dragTarget.moved = true;
 
@@ -1748,6 +1900,16 @@
         }
         sState.session.setter_target.x = Math.max(0.5, Math.min(8.5, x_m));
         sState.session.setter_target.y = Math.max(0.2, Math.min(4.0, y_m));
+        refreshLocalReceiveScores();
+        renderCourt();
+      } else if (sState.dragTarget.type === "ring") {
+        const target = getSetterTarget();
+        const nextDist = Math.hypot(x_m - target.x, y_m - target.y);
+        const cur = getRingRadii();
+        cur[sState.dragTarget.ringIdx] = nextDist;
+        sState.session.receive_ring_radii_m = normalizeLocalRingRadii(cur, sState.dragTarget.ringIdx);
+        syncRingSliders();
+        refreshLocalReceiveScores();
         renderCourt();
       } else if (sState.dragTarget.type === "pass") {
         const sv = sState.session.serves.find((s) => s.serve_id === sState.dragTarget.serveId);
@@ -1801,6 +1963,12 @@
             const payload = await postServe(
               `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
               { setter_target: { x: target.x, y: target.y } }
+            );
+            applyServePayload(payload);
+          } else if (drag.type === "ring") {
+            const payload = await postServe(
+              `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+              { receive_ring_radii_m: getRingRadii() }
             );
             applyServePayload(payload);
           } else if (drag.type === "pass") {

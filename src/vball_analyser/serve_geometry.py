@@ -403,12 +403,28 @@ def clamp_setter_target(target: Point2D) -> Point2D:
     return Point2D(x=round(cx, 3), y=round(cy, 3))
 
 
+def normalize_receive_ring_radii(
+    radii: tuple[float, float, float] | list[float],
+) -> tuple[float, float, float]:
+    """Validate and clamp concentric receive scoring ring radii (score 3, score 2, score 1) in meters."""
+    if len(radii) != 3:
+        raise ValueError("Receive ring radii must contain exactly 3 values (score 3, 2, 1).")
+    vals = [float(v) for v in radii]
+    if not all(math.isfinite(v) for v in vals):
+        raise ValueError("Receive ring radii must be finite numbers.")
+    r3 = max(0.4, min(4.0, vals[0]))
+    r2 = max(r3 + 0.3, min(6.5, vals[1]))
+    r1 = max(r2 + 0.3, min(8.5, vals[2]))
+    return (round(r3, 2), round(r2, 2), round(r1, 2))
+
+
 def score_receive(
     pass_x_m: float | None,
     pass_y_m: float | None,
     result: Literal["in", "ace", "out", "net"],
     setter_target: Point2D | None = None,
     *,
+    ring_radii_m: tuple[float, float, float] | None = None,
     unplayable: bool = False,
 ) -> tuple[float | None, Literal[0, 1, 2, 3] | None]:
     """Compute (distance_to_setter_m, receive_score) for a serve reception on the 0-3 scale."""
@@ -430,7 +446,7 @@ def score_receive(
     if py < 0.0:
         return dist, 0
 
-    r3, r2, r1 = RECEIVE_RING_RADII_M
+    r3, r2, r1 = normalize_receive_ring_radii(ring_radii_m) if ring_radii_m is not None else RECEIVE_RING_RADII_M
     if dist <= r3:
         return dist, 3
     if dist <= r2:

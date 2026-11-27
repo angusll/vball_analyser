@@ -74,6 +74,7 @@ class UpdateServeSessionRequest(BaseModel):
     servers: list[str] | None = None
     default_passers: list[PasserPosition] | None = None
     setter_target: Point2D | None = None
+    receive_ring_radii_m: tuple[float, float, float] | None = None
 
 
 class CourtCalibrationRequest(BaseModel):
@@ -703,6 +704,7 @@ def create_app(
                     video_sess.metadata,
                     server_name,
                     setter_target=serve_sess.setter_target,
+                    ring_radii_m=serve_sess.receive_ring_radii_m,
                 )
 
             updated = serve_store.replace_auto_serves(serve_session_id, detected)
@@ -763,6 +765,7 @@ def create_app(
                 "servers": body.servers,
                 "default_passers": body.default_passers,
                 "setter_target": body.setter_target,
+                "receive_ring_radii_m": body.receive_ring_radii_m,
             }
             if body.clear_video_session:
                 kwargs["video_session_id"] = None

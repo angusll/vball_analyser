@@ -14,6 +14,7 @@ from vball_analyser.serve_geometry import (
     compute_receive_summary,
     default_passer_formation,
     interpolate_court_from_net,
+    normalize_receive_ring_radii,
     project_court_to_image,
     project_image_to_court,
     score_receive,
@@ -254,6 +255,15 @@ def test_score_receive_rings_boundaries_and_special_cases() -> None:
 
     with pytest.raises(ValueError):
         score_receive(float("nan"), 1.0, "in", target)
+
+    # Custom resizable ring radii
+    assert normalize_receive_ring_radii((0.1, 0.2, 20.0)) == (0.4, 0.7, 8.5)
+    with pytest.raises(ValueError):
+        normalize_receive_ring_radii((1.0, float("inf"), 4.0))
+    dist_c, sc_c = score_receive(target.x + 2.0, target.y, "in", target, ring_radii_m=(2.2, 4.0, 6.0))
+    assert dist_c == pytest.approx(2.0, abs=1e-3) and sc_c == 3
+    _, sc_tight = score_receive(target.x + 2.0, target.y, "in", target, ring_radii_m=(0.8, 1.5, 2.5))
+    assert sc_tight == 1
 
 
 def test_compute_receive_summary_metrics_passer_order_and_filter() -> None:
