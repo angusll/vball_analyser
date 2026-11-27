@@ -39,9 +39,11 @@ packages = ["src/vball_analyser"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+addopts = "-n auto"
 
 [dependency-groups]
 dev = [
     "httpx>=0.29.0",
     "pytest>=9.2.0",
+    "pytest-xdist>=3.8.0",
 ]

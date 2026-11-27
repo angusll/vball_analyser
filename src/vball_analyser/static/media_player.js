@@ -153,9 +153,10 @@
 
       window.addEventListener("resize", () => this.requestRender());
 
-      if (typeof ResizeObserver === "function" && this.stage) {
+      if (typeof ResizeObserver === "function") {
         this._resizeObserver = new ResizeObserver(() => this.requestRender());
-        this._resizeObserver.observe(this.stage);
+        if (this.stage) this._resizeObserver.observe(this.stage);
+        if (this.root && this.root !== this.stage) this._resizeObserver.observe(this.root);
       }
 
       document.addEventListener("keydown", (ev) => {
@@ -164,14 +165,15 @@
         }
         const tag = ev.target && ev.target.tagName ? ev.target.tagName.toUpperCase() : "";
         const isEditable = Boolean(ev.target && ev.target.isContentEditable);
-        const inFormField = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || isEditable;
+        const isSeekSlider = Boolean(this.seekSlider && ev.target === this.seekSlider);
+        const inFormField = !isSeekSlider && (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || isEditable);
 
         if (this._adapter && typeof this._adapter.onKeyDown === "function") {
           const handled = this._adapter.onKeyDown(ev, this);
           if (handled === true) return;
         }
 
-        if (inFormField || ev.ctrlKey || ev.metaKey || ev.altKey || !this.hasVideo()) return;
+        if (inFormField || ev.ctrlKey || ev.metaKey || ev.altKey || !this.hasVideo() || !this._isVisible()) return;
 
         if (ev.code === "Space") {
           if (ev.repeat || tag === "BUTTON" || tag === "A") return;
@@ -248,7 +250,7 @@
 
       if (this.seekSlider) {
         this.seekSlider.max = String(Math.max(1, this.getDuration() || 1));
-        if (resetTime) this.seekSlider.value = "0";
+        if (changed || resetTime) this.seekSlider.value = "0";
       }
 
       this._updateEmptyStateVisibility();
@@ -326,7 +328,10 @@
 
     play() {
       if (!this.hasVideo()) return;
-      this.video.play();
+      const p = this.video.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => this._updatePlayPauseLabel());
+      }
       this._updatePlayPauseLabel();
     }
 
@@ -412,6 +417,13 @@
       };
     }
 
+    _isVisible() {
+      if (!this.root) return false;
+      if (this.root.classList && this.root.classList.contains("hidden")) return false;
+      if (typeof this.root.closest === "function" && this.root.closest(".hidden")) return false;
+      return true;
+    }
+
     _updateEmptyStateVisibility() {
       if (!this.emptyState) return;
       const allowEmpty = !this._adapter || this._adapter.showEmptyState !== false;
@@ -482,6 +494,18 @@
     requestRender() {
       this.renderTimeline();
 
+      const hasVid = this.hasVideo();
+      const timeS = hasVid ? this.getCurrentTime() : 0;
+      const frameIdx = hasVid ? this.getCurrentFrame() : 0;
+      if (hasVid) {
+        if (this.timeReadout) {
+          this.timeReadout.textContent = `${timeS.toFixed(2)}s · f${frameIdx}`;
+        }
+        if (this._adapter && typeof this._adapter.onTimeUpdate === "function") {
+          this._adapter.onTimeUpdate(timeS, frameIdx);
+        }
+      }
+
       const canvas = this.canvas;
       if (!canvas) return;
       const dpr = window.devicePixelRatio || 1;
@@ -496,18 +520,8 @@
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, cw, ch);
 
-        if (this.hasVideo()) {
-          const timeS = this.getCurrentTime();
-          const frameIdx = this.getCurrentFrame();
-          if (this.timeReadout) {
-            this.timeReadout.textContent = `${timeS.toFixed(2)}s · f${frameIdx}`;
-          }
-          if (this._adapter && typeof this._adapter.onTimeUpdate === "function") {
-            this._adapter.onTimeUpdate(timeS, frameIdx);
-          }
-          if (this._adapter && typeof this._adapter.onRenderOverlay === "function") {
-            this._adapter.onRenderOverlay(ctx, this, frameIdx, this.getVideoDisplayRect());
-          }
+        if (hasVid && this._adapter && typeof this._adapter.onRenderOverlay === "function") {
+          this._adapter.onRenderOverlay(ctx, this, frameIdx, this.getVideoDisplayRect());
         }
       }
     }

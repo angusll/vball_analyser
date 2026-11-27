@@ -182,3 +182,173 @@ def test_predictor_device_batch_defaults_and_weight_resolution(tmp_path: Path) -
     assert calls == [str(mlpkg), str(pt)]
     assert resolved == str(pt)
     assert model == f"loaded:{pt}:detect"
+
+
+def test_detect_high_arc_motion_balls_recovers_above_net_dropouts() -> None:
+    import cv2
+    import numpy as np
+    from vball_analyser.detector import _detect_high_arc_motion_balls
+    from vball_analyser.models import NetCalibration
+
+    cal = NetCalibration(left_point=Point2D(x=180.0, y=220.0), right_point=Point2D(x=980.0, y=220.0), is_manual=True)
+    frames = []
+    for f in range(16):
+        img = np.full((480, 960, 3), 210, dtype=np.uint8)
+        bx = int(600 - f * 20)
+        by = int(150 - 8 * f + 0.5 * f * f)
+        cv2.circle(img, (bx, by), 9, (40, 210, 235), -1)
+        frames.append((f, f / 30.0, img))
+
+    extra = _detect_high_arc_motion_balls(frames, cal, existing_by_frame={})
+    assert len(extra) >= 12
+    by_f = {d.frame_idx: d for d in extra}
+    assert 8 in by_f
+    assert abs(by_f[8].x - (600 - 8 * 20)) <= 4.0
+    assert abs(by_f[8].y - (150 - 8 * 8 + 0.5 * 64)) <= 4.0
+
+
+def test_yolo_predictor_skips_vfr_duplicates_and_conditional_tiling() -> None:
+    import numpy as np
+    from vball_analyser.detector import _find_unique_frame_indices
+    from vball_analyser.models import NetCalibration
+
+    cal = NetCalibration(left_point=Point2D(x=100.0, y=200.0), right_point=Point2D(x=540.0, y=200.0), is_manual=True)
+
+    # Build 6 frames: f0 (moving ball at x=200), f1 (dup of f0), f2 (moving ball at x=260),
+    # f3 (dup of f2), f4 (no ball -> should trigger tiling), f5 (dup of f4)
+    img0 = np.full((360, 640, 3), 120, dtype=np.uint8)
+    img0[100:120, 190:210] = 240
+    img2 = np.full((360, 640, 3), 120, dtype=np.uint8)
+    img2[100:120, 250:270] = 240
+    img4 = np.full((360, 640, 3), 130, dtype=np.uint8)
+
+    frames = [
+        (0, 0.0 / 30.0, img0),
+        (1, 1.0 / 30.0, img0.copy()),
+        (2, 2.0 / 30.0, img2),
+        (3, 3.0 / 30.0, img2.copy()),
+        (4, 4.0 / 30.0, img4),
+        (5, 5.0 / 30.0, img4.copy()),
+    ]
+    uniq, mapping = _find_unique_frame_indices(frames)
+    assert uniq == [0, 2, 4]
+    assert mapping == [0, 0, 1, 1, 2, 2]
+
+    class _FakeArray:
+        def __init__(self, data: list) -> None:
+            self._data = data
+
+        def tolist(self) -> list:
+            return self._data
+
+        def int(self) -> "_FakeArray":
+            return self
+
+    class _FakeBoxes:
+        def __init__(self, xyxy: list, conf: list) -> None:
+            self.xyxy = _FakeArray(xyxy)
+            self.conf = _FakeArray(conf)
+
+        def __len__(self) -> int:
+            return len(self.xyxy.tolist())
+
+    class _FakeDetModel:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []  # (imgsz, batch_len)
+
+        def predict(self, imgs: list, *, imgsz: int, **_kw: object) -> list:
+            self.calls.append((imgsz, len(imgs)))
+            out = []
+            for idx, _im in enumerate(imgs):
+                if imgsz == 1280:
+                    if idx == 0:
+                        boxes = _FakeBoxes([[190.0, 100.0, 210.0, 120.0]], [0.8])
+                    elif idx == 1:
+                        boxes = _FakeBoxes([[250.0, 100.0, 270.0, 120.0]], [0.8])
+                    else:
+                        boxes = None
+                    out.append(SimpleNamespace(boxes=boxes))
+                else:
+                    # Tile pass: only called for unique frame 2 (2 tiles)
+                    out.append(SimpleNamespace(boxes=None))
+            return out
+
+    class _FakePoseModel:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def track(self, imgs: list, **_kw: object) -> list:
+            self.calls.append(len(imgs))
+            out = []
+            for _im in imgs:
+                boxes = SimpleNamespace(id=_FakeArray([7]), xyxy=_FakeArray([[100.0, 150.0, 160.0, 320.0]]))
+                kps = SimpleNamespace(
+                    xy=_FakeArray([[[130.0, 170.0 + k * 5.0] for k in range(17)]]),
+                    conf=_FakeArray([[0.9] * 17]),
+                )
+                out.append(SimpleNamespace(boxes=boxes, keypoints=kps))
+            return out
+
+    pred = YoloGpuPredictor(device="cpu")
+    fake_det = _FakeDetModel()
+    fake_pose = _FakePoseModel()
+    pred._det_model = fake_det
+    pred._pose_model = fake_pose
+
+    balls = pred.detect_balls(frames, cal)
+    # Full-frame pass saw only 3 unique frames; tile pass saw only 2 tiles (for the 1 frame without a ball)
+    assert fake_det.calls == [(1280, 3), (960, 2)]
+    # Detections expanded to duplicate frames f0, f1, f2, f3
+    assert [b.frame_idx for b in balls] == [0, 1, 2, 3]
+
+    tracks = pred.track_poses(frames, cal)
+    # Pose tracker saw only 3 unique frames, expanded back to all 6 frames
+    assert fake_pose.calls == [3]
+    assert len(tracks) == 1
+    assert [pf.frame_idx for pf in tracks[0].frames] == [0, 1, 2, 3, 4, 5]
+
+
+def test_yolo_predictor_warmup_and_app_startup_preload(tmp_path: Path) -> None:
+    import threading
+    from fastapi.testclient import TestClient
+    from vball_analyser.app import create_app
+    from vball_analyser.config import AppConfig
+
+    # 1. YoloGpuPredictor.warmup() runs a dummy pass on both det and pose models
+    calls: list[tuple[str, dict]] = []
+
+    class _FakeModel:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def predict(self, imgs, **kwargs):
+            calls.append((f"{self.name}:predict", kwargs))
+            return []
+
+        def track(self, imgs, **kwargs):
+            calls.append((f"{self.name}:track", kwargs))
+            return []
+
+    pred = YoloGpuPredictor(device="cpu", models_dir=tmp_path)
+    pred._det_model = _FakeModel("det")
+    pred._pose_model = _FakeModel("pose")
+    pred._det_resolved = "yolo11m.pt"
+    pred._pose_resolved = "yolo11m-pose.pt"
+    pred.warmup()
+    assert [name for name, _ in calls] == ["det:predict", "pose:track"]
+    assert calls[0][1]["imgsz"] == 1280
+    assert calls[1][1]["imgsz"] == 1280
+
+    # 2. FastAPI lifespan triggers predictor.warmup() automatically in background
+    warmed = threading.Event()
+
+    class _WarmupPredictor(SyntheticColorPredictor):
+        def warmup(self) -> None:
+            warmed.set()
+
+    cfg = AppConfig(data_dir=tmp_path / "data")
+    app = create_app(config=cfg, predictor=_WarmupPredictor(), warmup_on_startup=True)
+    with TestClient(app) as client:
+        assert warmed.wait(timeout=3.0)
+        resp = client.get("/api/csrf")
+        assert resp.status_code == 200

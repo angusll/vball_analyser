@@ -127,3 +127,119 @@ def test_fit_setting_path_picks_set_over_longer_serve_and_pass_arcs() -> None:
     assert 89 <= traj.release_frame <= 91
     assert traj.contact_frame == 120
 
+
+def test_fit_setting_path_rejects_vertical_toss_duplicates_and_low_conf_bridge() -> None:
+    fps = 30.0
+    cal = NetCalibration(
+        left_point=Point2D(x=240.0, y=200.0),
+        right_point=Point2D(x=910.0, y=200.0),
+        is_manual=True,
+    )
+    dets: list[BallDetection] = []
+
+    # 1. Nearly-vertical server toss with duplicate VFR frames below net tape (f=43..61)
+    for f in range(43, 62):
+        step = (f - 43) // 2
+        dets.append(
+            BallDetection(
+                frame_idx=f,
+                timestamp_s=f / fps,
+                x=380.0 + 0.3 * step,
+                y=248.0 - 4.0 * step + 0.4 * step * step,
+                conf=0.65,
+            )
+        )
+
+    # 2. Low-confidence motion-damped static FP bridged to a falling serve (f=81 + f=88..92)
+    dets.append(BallDetection(frame_idx=81, timestamp_s=81 / fps, x=327.0, y=308.0, conf=0.04))
+    for f, yv in [(88, 163.0), (89, 163.0), (90, 185.0), (91, 186.0), (92, 215.0)]:
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=376.0 + (f - 88), y=yv, conf=0.55))
+
+    # 3. True high set arc from setter (625, 220) to left outside hitter (250, 140) across f=142..178
+    for f in range(142, 179, 2):
+        tau = (f - 142) / fps
+        bx = 625.0 - 310.0 * tau
+        by = 220.0 - 520.0 * tau + 380.0 * tau * tau
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=bx, y=by, conf=0.45))
+
+    cand_contacts = [(178, Point2D(x=252.0, y=145.0))]
+    traj = fit_setting_path(dets, cal, fps=fps, frame_height=576, candidate_contact_frames=cand_contacts)
+    assert traj is not None
+    assert 141 <= traj.release_frame <= 144
+    assert 176 <= traj.contact_frame <= 180
+    assert traj.peak_point.y < 100.0
+
+
+def test_fit_setting_path_does_not_abort_early_on_vfr_duplicate_frames_before_contact() -> None:
+    fps = 30.0
+    cal = NetCalibration(
+        left_point=Point2D(x=176.0, y=202.0),
+        right_point=Point2D(x=1019.0, y=202.8),
+        is_manual=False,
+    )
+    dets: list[BallDetection] = []
+    # Smooth high set arc f=143..179
+    for f in range(143, 180):
+        tau = (f - 143) / fps
+        bx = 625.0 - 315.0 * tau
+        by = 220.0 - 540.0 * tau + 370.0 * tau * tau
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=bx, y=by, conf=0.5))
+
+    # Two VFR duplicate frames repeating f=179's position right before actual contact at f=182
+    last = dets[-1]
+    dets.append(BallDetection(frame_idx=180, timestamp_s=180 / fps, x=last.x, y=last.y, conf=0.5))
+    dets.append(BallDetection(frame_idx=181, timestamp_s=181 / fps, x=last.x, y=last.y, conf=0.5))
+
+    # True ball contact at f=182 followed by sharp spike deflection at f=183..185
+    tau_con = (182 - 143) / fps
+    cx = 625.0 - 315.0 * tau_con
+    cy = 220.0 - 540.0 * tau_con + 370.0 * tau_con * tau_con
+    dets.append(BallDetection(frame_idx=182, timestamp_s=182 / fps, x=cx, y=cy, conf=0.5))
+    for k in range(1, 4):
+        dets.append(BallDetection(frame_idx=182 + k, timestamp_s=(182 + k) / fps, x=cx + 80.0 * k, y=cy + 20.0 * k, conf=0.5))
+
+    cand_contacts = [(182, Point2D(x=cx + 4.0, y=cy + 6.0))]
+    traj = fit_setting_path(dets, cal, fps=fps, frame_height=576, candidate_contact_frames=cand_contacts)
+    assert traj is not None
+    assert traj.contact_frame == 182
+
+
+def test_fit_setting_path_does_not_over_trim_jittered_contact_frame_on_deflection() -> None:
+    fps = 30.0
+    cal = NetCalibration(
+        left_point=Point2D(x=246.0, y=198.0),
+        right_point=Point2D(x=906.0, y=202.0),
+        is_manual=True,
+    )
+    dets: list[BallDetection] = []
+    # Smooth high set arc f=147..176
+    for f in range(147, 177):
+        tau = (f - 147) / fps
+        bx = 590.0 - 327.0 * tau
+        by = 174.0 - 516.0 * tau + 435.0 * tau * tau
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=bx, y=by, conf=0.5))
+
+    # Realistic 9-12px VFR jitter on descending branch f=179 and contact f=182
+    for f, dx, dy in [(179, 8.0, -5.0), (182, 11.0, 4.0)]:
+        tau = (f - 147) / fps
+        bx = 590.0 - 327.0 * tau + dx
+        by = 174.0 - 516.0 * tau + 435.0 * tau * tau + dy
+        dets.append(BallDetection(frame_idx=f, timestamp_s=f / fps, x=bx, y=by, conf=0.5))
+
+    # Sharp post-contact spike deflection at f=183..185
+    for k in range(1, 4):
+        dets.append(BallDetection(frame_idx=182 + k, timestamp_s=(182 + k) / fps, x=300.0 + 30.0 * k, y=174.0, conf=0.5))
+
+    con_det = [d for d in dets if d.frame_idx == 182][0]
+    cand_contacts = [(182, Point2D(x=con_det.x + 2.0, y=con_det.y + 8.0))]
+    traj = fit_setting_path(dets, cal, fps=fps, frame_height=576, candidate_contact_frames=cand_contacts)
+    assert traj is not None
+    assert traj.contact_frame == 182
+    # Arc points should lie smoothly on the fitted parabola (constant dx per frame, smooth y)
+    dxs = [b.x - a.x for a, b in zip(traj.arc_points, traj.arc_points[1:], strict=False)]
+    assert max(dxs) - min(dxs) <= 0.1
+
+
+
+
+

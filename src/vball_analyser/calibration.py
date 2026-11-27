@@ -28,21 +28,21 @@ def net_span_px(cal: NetCalibration) -> float:
 
 
 def cm_per_px(cal: NetCalibration) -> float | None:
-    """Return cm/px scale from 9.0m regulation net width when manually calibrated."""
-    if not cal.is_manual:
-        return None
+    """Return cm/px scale from manual 9.0m net span, auto 1.0m net band height, or auto net span."""
     span = net_span_px(cal)
-    if span <= 1e-3:
-        return None
-    return 900.0 / span
+    if cal.is_manual:
+        return (900.0 / span) if span > 1e-3 else None
+    if cal.net_band_px is not None and cal.net_band_px >= 20.0:
+        return 100.0 / cal.net_band_px
+    if span > 1e-3:
+        return 900.0 / span
+    return None
 
 
 def estimated_cm_per_px(cal: NetCalibration) -> float:
-    """Return approximate cm/px scale even before manual antenna confirmation."""
-    span = net_span_px(cal)
-    if span <= 1e-3:
-        return 1.0
-    return 900.0 / span
+    """Return cm/px scale using the best available net reference."""
+    scale = cm_per_px(cal)
+    return scale if scale is not None else 1.0
 
 
 def height_above_tape(cal: NetCalibration, x: float, y: float) -> tuple[float, float | None]:
@@ -95,6 +95,8 @@ def auto_detect_net_tape(
     y_min = max(10, int(0.20 * h))
     y_max = min(h - 10, int(0.68 * h))
     roi = gray[y_min:y_max, :]
+    sobel_x = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+    mesh_offsets = np.arange(12, 48, 6)
 
     # Enhance horizontal bright tape contrast against darker net/background
     blur_v = cv2.GaussianBlur(roi, (1, 21), 0)
@@ -182,8 +184,16 @@ def auto_detect_net_tape(
         contrast = float(np.mean(tape_vals - 0.5 * (above_vals + below_vals)))
         brightness = float(np.mean(tape_vals))
 
+        # Net top tape sits directly above high-frequency vertical net mesh, whereas
+        # the bottom tape has net mesh above it and open court below.
+        ys_below = np.clip(ys[:, None] + mesh_offsets[None, :], 0, h - 1)
+        ys_above = np.clip(ys[:, None] - mesh_offsets[None, :], 0, h - 1)
+        tex_below = float(np.mean(sobel_x[ys_below, xi[:, None]]))
+        tex_above = float(np.mean(sobel_x[ys_above, xi[:, None]]))
+        mesh_asym = max(-35.0, min(45.0, tex_below - tex_above))
+
         center_y = float(m * (0.5 * w) + b_centered)
-        center_prior = 1.0 - min(1.0, abs(center_y - 0.44 * h) / (0.30 * h))
+        center_prior = 1.0 - min(1.0, abs(center_y - 0.42 * h) / (0.30 * h))
 
         person_bonus = 0.0
         if person_boxes:
@@ -193,7 +203,15 @@ def auto_detect_net_tape(
                 if by1 - 20 <= ly_at_b <= by2:
                     person_bonus += 15.0
 
-        score = (span / w) * 100.0 + max(0.0, contrast) * 1.4 + brightness * 0.25 + center_prior * 20.0 + person_bonus + min(40.0, total_len / w * 20.0)
+        score = (
+            (span / w) * 100.0
+            + max(0.0, contrast) * 1.4
+            + brightness * 0.25
+            + center_prior * 20.0
+            + mesh_asym * 1.5
+            + person_bonus
+            + min(40.0, total_len / w * 20.0)
+        )
         if score > best_score and contrast > 8.0:
             best_score = score
             best_line = (float(m), b_centered)
@@ -204,8 +222,38 @@ def auto_detect_net_tape(
 
     m, b = best_line
     lx, rx = best_span
+
+    # Estimate regulation 1.0m vertical net band height (top tape to bottom tape) for accurate auto cm/px
+    xs_band = np.linspace(lx + 0.1 * (rx - lx), rx - 0.1 * (rx - lx), 80)
+    xi_band = np.clip(np.round(xs_band).astype(int), 0, w - 1)
+    top_ys = m * xs_band + b
+    min_band = max(30, int(0.055 * h))
+    max_band = min(int(0.26 * h), h - 15 - int(np.max(top_ys)))
+    net_band_px: float | None = None
+    if max_band > min_band + 10:
+        best_bot_score = -1e9
+        best_dy: int | None = None
+        for dy in range(min_band, max_band + 1):
+            by = np.clip(np.round(top_ys + dy).astype(int), 6, h - 7)
+            band_bright = float(np.mean(gray[by, xi_band]))
+            above_b = float(np.mean(gray[np.clip(by - 6, 0, h - 1), xi_band]))
+            below_b = float(np.mean(gray[np.clip(by + 6, 0, h - 1), xi_band]))
+            b_contrast = band_bright - 0.5 * (above_b + below_b)
+            # Bottom tape has net mesh texture above it and open court below it
+            ys_a = np.clip(by[:, None] - mesh_offsets[None, :], 0, h - 1)
+            ys_b = np.clip(by[:, None] + mesh_offsets[None, :], 0, h - 1)
+            mesh_above = float(np.mean(sobel_x[ys_a, xi_band[:, None]]))
+            mesh_below = float(np.mean(sobel_x[ys_b, xi_band[:, None]]))
+            b_score = b_contrast * 1.4 + (mesh_above - mesh_below) * 1.2 + band_bright * 0.15
+            if b_score > best_bot_score and b_contrast > 4.0 and mesh_above > mesh_below + 5.0:
+                best_bot_score = b_score
+                best_dy = dy
+        if best_dy is not None:
+            net_band_px = float(best_dy)
+
     return NetCalibration(
         left_point=Point2D(x=round(lx, 1), y=round(m * lx + b, 1)),
         right_point=Point2D(x=round(rx, 1), y=round(m * rx + b, 1)),
+        net_band_px=net_band_px,
         is_manual=False,
     )

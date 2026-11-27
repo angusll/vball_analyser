@@ -111,6 +111,14 @@
             </svg>
             <span>Reassign Hitter</span>
           </button>
+
+          <button id="rerunDetectionBtn" class="btn btn-secondary" type="button" title="Re-run ball and pose detection on the current video">
+            <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M13.2 8a5.2 5.2 0 1 1-1.4-3.5"/>
+              <path d="M13.2 3.2v2.6h-2.6"/>
+            </svg>
+            <span>Re-run Detection</span>
+          </button>
         </div>
 
         <div class="mode-status">
@@ -281,6 +289,10 @@
     <section class="serve-stage-column">
       <div class="serve-toolbar">
         <div class="serve-toolbar-group">
+          <div class="serve-mode-switcher" role="group" aria-label="Serve analysis mode">
+            <button class="serve-mode-btn active" data-serve-mode="serve" type="button" aria-pressed="true">Serve Distribution</button>
+            <button class="serve-mode-btn" data-serve-mode="receive" type="button" aria-pressed="false">Receive Quality</button>
+          </div>
           <select id="serveSessionSelect" class="select-input" aria-label="Serve practice sessions"></select>
           <button id="newServeSessionBtn" class="btn btn-secondary btn-small" type="button">+ New Session</button>
           <button id="deleteServeSessionBtn" class="btn btn-ghost btn-small" type="button" title="Delete the active serve session">Delete</button>
@@ -320,14 +332,14 @@
         <div class="serve-panel serve-court-panel">
           <div class="serve-panel-header">
             <div class="serve-panel-title">
-              <h2>Receiving Court (9m &times; 9m)</h2>
-              <div class="formation-group" role="group" aria-label="Passer formation presets">
+              <h2 id="serveCourtTitle">Receiving Court (9m &times; 9m)</h2>
+              <div id="serveFormationGroup" class="formation-group" role="group" aria-label="Passer formation presets">
                 <button class="speed-btn serve-formation-btn" data-formation="2" type="button">2-Passer</button>
                 <button class="speed-btn serve-formation-btn active" data-formation="3" type="button">3-Passer</button>
                 <button class="speed-btn serve-formation-btn" data-formation="4" type="button">4-Passer</button>
               </div>
             </div>
-            <div class="serve-panel-actions">
+            <div id="serveLayerToggles" class="serve-panel-actions">
               <button id="toggleDotsBtn" class="pill active" type="button" aria-pressed="true">Dots</button>
               <button id="toggleHeatmapBtn" class="pill" type="button" aria-pressed="false">Heatmap</button>
               <button id="toggleSeamsBtn" class="pill active" type="button" aria-pressed="true">Seams</button>
@@ -347,10 +359,25 @@
                 <option value="out">Result: Out</option>
                 <option value="net">Result: Net</option>
               </select>
+              <select id="selectedReceiveScore" class="select-input select-compact hidden" aria-label="Selected receive score">
+                <option value="auto">Score: Auto</option>
+                <option value="3">3 &mdash; Perfect</option>
+                <option value="2">2 &mdash; Good</option>
+                <option value="1">1 &mdash; Out-of-Sys</option>
+                <option value="0">0 &mdash; Bad</option>
+              </select>
+              <select id="selectedPasserLabel" class="select-input select-compact hidden" aria-label="Selected passer">
+                <option value="">Passer: Unassigned</option>
+                <option value="P1">Passer: P1</option>
+                <option value="P2">Passer: P2</option>
+                <option value="P3">Passer: P3</option>
+                <option value="P4">Passer: P4</option>
+              </select>
               <button id="deselectServeBtn" class="btn btn-ghost btn-small hidden" type="button">Deselect</button>
               <button id="undoServeBtn" class="btn btn-secondary btn-small" type="button">Undo</button>
               <button id="clearServesBtn" class="btn btn-ghost btn-small" type="button" title="Clear all serves in this session">Clear</button>
               <button id="resetPassersBtn" class="btn btn-secondary btn-small" type="button">Reset Passers</button>
+              <button id="resetSetterTargetBtn" class="btn btn-secondary btn-small hidden" type="button" title="Reset setter target position and scoring ring sizes to defaults">Reset Target</button>
             </div>
           </div>
         </div>
@@ -369,7 +396,7 @@
         </form>
       </div>
 
-      <div class="sidebar-section">
+      <div id="serveManualResultSection" class="sidebar-section">
         <div class="sidebar-header">
           <h3>Manual Click Result</h3>
         </div>
@@ -380,7 +407,7 @@
         </div>
       </div>
 
-      <div class="sidebar-section">
+      <div id="serveDistSummarySection" class="sidebar-section">
         <div class="sidebar-header">
           <h3>Distribution Summary</h3>
           <span id="serveTotalBadge" class="count-badge">0</span>
@@ -389,7 +416,7 @@
         <div id="serveSeamPairs" class="serve-seam-pairs"></div>
       </div>
 
-      <div class="sidebar-section">
+      <div id="serveAreaBreakdownSection" class="sidebar-section">
         <div class="sidebar-header">
           <h3>Area Breakdown (Z1&ndash;Z6)</h3>
           <span id="serveDepthBadge" class="unit-badge">Short 0 &middot; Deep 0</span>
@@ -397,9 +424,43 @@
         <div id="serveZoneBars" class="zone-bars"></div>
       </div>
 
+      <div id="receiveSummarySection" class="sidebar-section hidden">
+        <div class="sidebar-header">
+          <h3>Receive Quality Summary</h3>
+          <span id="receiveScoredBadge" class="count-badge">0</span>
+        </div>
+        <div id="receiveSummaryCards" class="serve-kpi-grid"></div>
+        <div id="receiveScoreBars" class="zone-bars"></div>
+        <div id="receiveRingControls" class="receive-ring-controls" aria-label="Scoring ring sizes">
+          <div class="ring-controls-title">Scoring Rings</div>
+          <label class="ring-slider-row" for="ringRadius3">
+            <span class="ring-slider-label score-3">3 (Green)</span>
+            <input id="ringRadius3" class="ring-slider score-3" type="range" min="0.4" max="4.0" step="0.1" value="1.5">
+            <span id="ringRadius3Val" class="ring-slider-val">1.5m</span>
+          </label>
+          <label class="ring-slider-row" for="ringRadius2">
+            <span class="ring-slider-label score-2">2 (Yellow)</span>
+            <input id="ringRadius2" class="ring-slider score-2" type="range" min="0.7" max="6.5" step="0.1" value="3.2">
+            <span id="ringRadius2Val" class="ring-slider-val">3.2m</span>
+          </label>
+          <label class="ring-slider-row" for="ringRadius1">
+            <span class="ring-slider-label score-1">1 (Red)</span>
+            <input id="ringRadius1" class="ring-slider score-1" type="range" min="1.0" max="8.5" step="0.1" value="4.8">
+            <span id="ringRadius1Val" class="ring-slider-val">4.8m</span>
+          </label>
+        </div>
+      </div>
+
+      <div id="receivePasserSection" class="sidebar-section hidden">
+        <div class="sidebar-header">
+          <h3>By Passer</h3>
+        </div>
+        <div id="receivePasserTable" class="passer-summary-list"></div>
+      </div>
+
       <div class="sidebar-section serve-log-section">
         <div class="sidebar-header">
-          <h3>Serve Log</h3>
+          <h3 id="serveLogTitle">Serve Log</h3>
         </div>
         <div id="serveLogList" class="serve-log-list" role="list"></div>
       </div>

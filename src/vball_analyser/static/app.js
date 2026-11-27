@@ -53,6 +53,7 @@ const els = {
   netHeightSelect: document.getElementById("netHeightSelect"),
   calScaleBadge: document.getElementById("calScaleBadge"),
   reassignHitterBtn: document.getElementById("reassignHitterBtn"),
+  rerunDetectionBtn: document.getElementById("rerunDetectionBtn"),
   modeHint: document.getElementById("modeHint"),
   cancelModeBtn: document.getElementById("cancelModeBtn"),
   shortcutLegend: document.getElementById("shortcutLegend"),
@@ -149,10 +150,12 @@ function currentFrameIdx() {
 function syncControlsDisabledState() {
   const hasSession = Boolean(state.session);
   const hasPlay = Boolean(getActivePlay());
+  const isBusy = hasSession && state.session.status !== "ready" && state.session.status !== "error";
 
   els.calibrateNetBtn.disabled = !hasSession;
   els.netHeightSelect.disabled = !hasSession;
   els.reassignHitterBtn.disabled = !hasPlay;
+  els.rerunDetectionBtn.disabled = !hasSession || isBusy;
   els.addPlayBtn.disabled = !hasSession;
   els.exportMp4Btn.disabled = !hasPlay;
 }
@@ -175,12 +178,29 @@ function updateCalScaleBadge() {
     els.calScaleBadge.classList.add("is-calibrated");
     els.calScaleBadge.textContent = `Calibrated · ${cmPerPx.toFixed(2)} cm/px`;
     els.calScaleBadge.title = "2-click antenna calibration active (9.0m regulation net span).";
-    els.metricsUnitBadge.textContent = "Calibrated Net Plane";
+    els.metricsUnitBadge.textContent = `Net Ref ${(cal.net_height_m || 2.43).toFixed(2)}m`;
+  } else if (cal) {
+    const spanPx = Math.hypot(
+      cal.right_point.x - cal.left_point.x,
+      cal.right_point.y - cal.left_point.y
+    );
+    const cmPerPx = cal.net_band_px && cal.net_band_px >= 20
+      ? 100.0 / cal.net_band_px
+      : (spanPx > 1 ? 900.0 / spanPx : 0);
+    els.calScaleBadge.textContent = cmPerPx > 0 ? `Auto Net · ${cmPerPx.toFixed(2)} cm/px` : "Auto Net";
+    els.calScaleBadge.title = "Estimated from auto-detected net height (click 'Calibrate Net' to refine).";
+    els.metricsUnitBadge.textContent = `Net Ref ${(cal.net_height_m || 2.43).toFixed(2)}m`;
   } else {
-    els.calScaleBadge.textContent = "Auto Tape · px";
-    els.calScaleBadge.title = "Click 'Calibrate Net (2 Clicks)' on left & right antennas to convert px to cm.";
+    els.calScaleBadge.textContent = "Auto Tape";
     els.metricsUnitBadge.textContent = "2D Camera Plane";
   }
+}
+
+function formatHeightCm(aboveTapeCm, netHeightM) {
+  const netCm = (Number(netHeightM) || 2.43) * 100.0;
+  const totalCm = netCm + aboveTapeCm;
+  const relSign = aboveTapeCm >= 0 ? "+" : "";
+  return `${Math.round(totalCm)} cm (${relSign}${Math.round(aboveTapeCm)} cm)`;
 }
 
 function getPlayMechanicsRows(play) {
@@ -188,14 +208,15 @@ function getPlayMechanicsRows(play) {
   const hm = play.hitter_metrics;
   const traj = play.set_trajectory;
   const blk = play.block_summary;
+  const netHeightM = state.session && state.session.calibration ? state.session.calibration.net_height_m : 2.43;
   const setPeakVal = traj
     ? (traj.peak_height_cm !== null
-        ? `${traj.peak_height_cm >= 0 ? "+" : ""}${traj.peak_height_cm.toFixed(0)} cm`
+        ? formatHeightCm(traj.peak_height_cm, netHeightM)
         : `${traj.peak_height_px >= 0 ? "+" : ""}${traj.peak_height_px.toFixed(0)} px`)
     : "N/A";
   const contactHtVal = hm && hm.contact_height_px !== null
     ? (hm.contact_height_cm !== null
-        ? `${hm.contact_height_cm >= 0 ? "+" : ""}${hm.contact_height_cm.toFixed(0)} cm (${hm.contact_height_px >= 0 ? "+" : ""}${hm.contact_height_px.toFixed(0)}px)`
+        ? formatHeightCm(hm.contact_height_cm, netHeightM)
         : `${hm.contact_height_px >= 0 ? "+" : ""}${hm.contact_height_px.toFixed(0)} px`)
     : "N/A";
   const blockVal = blk.seam_open
@@ -516,33 +537,39 @@ function renderStudioOverlay(ctx, player, frameIdx) {
     const traj = play.set_trajectory;
     const vis = traj.arc_points.filter((pt) => pt.frame_idx <= frameIdx);
     if (vis.length >= 2) {
-      const startPt = toCanvasPt(vis[0]);
-      const endPt = toCanvasPt(vis[vis.length - 1]);
+      const canvasPts = vis.map((pt) => toCanvasPt(pt));
+      const startPt = canvasPts[0];
+      const endPt = canvasPts[canvasPts.length - 1];
       const grad = ctx.createLinearGradient(startPt.x, startPt.y, endPt.x, endPt.y);
       grad.addColorStop(0, "#38bdf8");
       grad.addColorStop(1, "#facc15");
+
+      const traceSmoothArc = () => {
+        ctx.beginPath();
+        ctx.moveTo(canvasPts[0].x, canvasPts[0].y);
+        if (canvasPts.length === 2) {
+          ctx.lineTo(canvasPts[1].x, canvasPts[1].y);
+          return;
+        }
+        for (let i = 1; i < canvasPts.length - 1; i++) {
+          const midX = (canvasPts[i].x + canvasPts[i + 1].x) * 0.5;
+          const midY = (canvasPts[i].y + canvasPts[i + 1].y) * 0.5;
+          ctx.quadraticCurveTo(canvasPts[i].x, canvasPts[i].y, midX, midY);
+        }
+        ctx.lineTo(endPt.x, endPt.y);
+      };
 
       ctx.save();
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.strokeStyle = "rgba(2, 6, 23, 0.65)";
       ctx.lineWidth = 5.5;
-      ctx.beginPath();
-      vis.forEach((pt, i) => {
-        const cp = toCanvasPt(pt);
-        if (i === 0) ctx.moveTo(cp.x, cp.y);
-        else ctx.lineTo(cp.x, cp.y);
-      });
+      traceSmoothArc();
       ctx.stroke();
 
       ctx.strokeStyle = grad;
       ctx.lineWidth = 3.2;
-      ctx.beginPath();
-      vis.forEach((pt, i) => {
-        const cp = toCanvasPt(pt);
-        if (i === 0) ctx.moveTo(cp.x, cp.y);
-        else ctx.lineTo(cp.x, cp.y);
-      });
+      traceSmoothArc();
       ctx.stroke();
       ctx.restore();
     }
@@ -649,13 +676,14 @@ function renderStudioOverlay(ctx, player, frameIdx) {
       ctx.restore();
 
       if (state.overlays.inlineStats) {
+        const netHeightM = cal ? cal.net_height_m : 2.43;
         const htText = hm.contact_height_cm !== null
-          ? `${hm.contact_height_cm >= 0 ? "+" : ""}${hm.contact_height_cm.toFixed(0)}cm`
+          ? formatHeightCm(hm.contact_height_cm, netHeightM)
           : `${hm.contact_height_px >= 0 ? "+" : ""}${hm.contact_height_px.toFixed(0)}px`;
         const dispRect = getVideoDisplayRect();
         const placeLeft = cp.x > dispRect.ox + dispRect.dw * 0.65;
-        const badgeX = placeLeft ? Math.max(10, cp.x - 190) : cp.x + 16;
-        drawBadge(ctx, `Contact ${htText} above tape`, badgeX, cp.y - 4, "#facc15");
+        const badgeX = placeLeft ? Math.max(10, cp.x - 210) : cp.x + 16;
+        drawBadge(ctx, `Contact ${htText}`, badgeX, cp.y - 4, "#facc15");
         if (hm.arm_extension_deg !== null) {
           drawBadge(ctx, `Arm ${hm.arm_extension_deg.toFixed(0)}° · ${hm.jump_timing_label}`, badgeX, cp.y + 22, "#4ade80");
         }
@@ -1229,7 +1257,7 @@ function setupEventListeners() {
         return true;
       }
       if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
-      if (ev.target && ["INPUT", "SELECT", "TEXTAREA"].includes(ev.target.tagName)) return false;
+      if (ev.target && (["INPUT", "SELECT", "TEXTAREA"].includes(ev.target.tagName) || ev.target.isContentEditable)) return false;
       if (["Digit1", "Digit2", "Digit3"].includes(ev.code)) {
         const play = getActivePlay();
         if (!play) return false;
@@ -1411,6 +1439,26 @@ function setupEventListeners() {
   els.reassignHitterBtn.addEventListener("click", () => {
     if (!getActivePlay()) return;
     setInteractiveMode(false, !state.reassigningHitter);
+  });
+
+  els.rerunDetectionBtn.addEventListener("click", async () => {
+    if (!state.session) return;
+    setInteractiveMode(false, false);
+    els.rerunDetectionBtn.disabled = true;
+    els.exportStatus.classList.remove("is-error");
+    els.exportStatus.textContent = "";
+    try {
+      const updated = await apiPostJson(
+        `/api/sessions/${encodeURIComponent(state.session.session_id)}/rerun`,
+        {}
+      );
+      applySession(updated, false);
+      refreshSessionsDropdown();
+    } catch (err) {
+      els.exportStatus.classList.add("is-error");
+      els.exportStatus.textContent = err.message;
+      syncControlsDisabledState();
+    }
   });
 
   els.cancelModeBtn.addEventListener("click", () => {

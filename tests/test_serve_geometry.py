@@ -6,13 +6,18 @@ import pytest
 
 from vball_analyser.models import CourtCalibration, PasserPosition, Point2D, ServeEvent
 from vball_analyser.serve_geometry import (
+    DEFAULT_SETTER_TARGET,
+    clamp_setter_target,
     classify_serve,
     compute_court_homography,
     compute_distribution_summary,
+    compute_receive_summary,
     default_passer_formation,
     interpolate_court_from_net,
+    normalize_receive_ring_radii,
     project_court_to_image,
     project_image_to_court,
+    score_receive,
 )
 
 
@@ -206,3 +211,153 @@ def test_distribution_summary_formulas_and_filter() -> None:
 
     s7 = compute_distribution_summary(serves, server_filter="#7")
     assert s7.total == 3 and s7.net_count == 0
+
+
+def test_clamp_setter_target_bounds_and_non_finite() -> None:
+    assert clamp_setter_target(Point2D(x=6.0, y=0.8)) == Point2D(x=6.0, y=0.8)
+    assert clamp_setter_target(Point2D(x=-2.0, y=-1.0)) == Point2D(x=0.5, y=0.2)
+    assert clamp_setter_target(Point2D(x=12.0, y=7.5)) == Point2D(x=8.5, y=4.0)
+
+    for bad in (
+        Point2D(x=float("nan"), y=1.0),
+        Point2D(x=4.5, y=float("inf")),
+        Point2D(x=float("-inf"), y=1.0),
+    ):
+        with pytest.raises(ValueError):
+            clamp_setter_target(bad)
+
+
+def test_score_receive_rings_boundaries_and_special_cases() -> None:
+    target = DEFAULT_SETTER_TARGET  # (6.0, 0.8)
+
+    # Ring boundaries: 1.5 -> 3, 3.2 -> 2, 4.8 -> 1, >4.8 -> 0
+    assert score_receive(6.0, 0.8, "in", target) == (0.0, 3)
+    assert score_receive(6.0, 2.3, "in", target) == (1.5, 3)
+    assert score_receive(6.0, 2.31, "in", target) == (1.51, 2)
+    assert score_receive(6.0, 4.0, "in", target) == (3.2, 2)
+    assert score_receive(6.0, 4.01, "in", target) == (3.21, 1)
+    assert score_receive(6.0, 5.6, "in", target) == (4.8, 1)
+    assert score_receive(6.0, 5.61, "in", target) == (4.81, 0)
+
+    # Overpass (py < 0) scores 0 even when close to setter target
+    dist_op, sc_op = score_receive(6.0, -0.2, "in", target)
+    assert dist_op == pytest.approx(1.0, abs=1e-3)
+    assert sc_op == 0
+
+    # Ace -> (None, 0); out / net -> (None, None)
+    assert score_receive(None, None, "ace", target) == (None, 0)
+    assert score_receive(6.0, 0.8, "out", target) == (None, None)
+    assert score_receive(6.0, 0.8, "net", target) == (None, None)
+
+    # Unplayable shank vs unrecorded manual serve
+    assert score_receive(None, None, "in", target, unplayable=True) == (None, 0)
+    assert score_receive(None, None, "in", target, unplayable=False) == (None, None)
+
+    with pytest.raises(ValueError):
+        score_receive(float("nan"), 1.0, "in", target)
+
+    # Custom resizable ring radii
+    assert normalize_receive_ring_radii((0.1, 0.2, 20.0)) == (0.4, 0.7, 8.5)
+    with pytest.raises(ValueError):
+        normalize_receive_ring_radii((1.0, float("inf"), 4.0))
+    dist_c, sc_c = score_receive(target.x + 2.0, target.y, "in", target, ring_radii_m=(2.2, 4.0, 6.0))
+    assert dist_c == pytest.approx(2.0, abs=1e-3) and sc_c == 3
+    _, sc_tight = score_receive(target.x + 2.0, target.y, "in", target, ring_radii_m=(0.8, 1.5, 2.5))
+    assert sc_tight == 1
+
+
+def test_compute_receive_summary_metrics_passer_order_and_filter() -> None:
+    empty = compute_receive_summary([])
+    assert empty.scored_count == 0
+    assert empty.avg_rating == 0.0
+    assert empty.in_system_pct == 0.0
+    assert empty.perfect_pct == 0.0
+    assert empty.by_passer == []
+
+    serves = [
+        ServeEvent(
+            serve_id="r1",
+            index=1,
+            server_name="#7",
+            x_m=1.8,
+            y_m=6.2,
+            result="in",
+            passer_label="P1",
+            receive_score=3,
+        ),
+        ServeEvent(
+            serve_id="r2",
+            index=2,
+            server_name="#7",
+            x_m=4.5,
+            y_m=6.5,
+            result="in",
+            passer_label="P2",
+            receive_score=2,
+        ),
+        ServeEvent(
+            serve_id="r3",
+            index=3,
+            server_name="#7",
+            x_m=1.8,
+            y_m=6.2,
+            result="in",
+            passer_label="P1",
+            receive_score=1,
+        ),
+        ServeEvent(
+            serve_id="r4",
+            index=4,
+            server_name="#7",
+            x_m=7.5,
+            y_m=6.0,
+            result="ace",
+            passer_label=None,
+            receive_score=0,
+        ),
+        ServeEvent(
+            serve_id="r5",
+            index=5,
+            server_name="#9",
+            x_m=7.2,
+            y_m=6.2,
+            result="in",
+            passer_label="P10",
+            receive_score=3,
+        ),
+        ServeEvent(
+            serve_id="r6",
+            index=6,
+            server_name="#7",
+            x_m=4.5,
+            y_m=9.6,
+            result="out",
+            receive_score=None,
+        ),
+    ]
+
+    all_sum = compute_receive_summary(serves)
+    assert all_sum.scored_count == 5
+    assert all_sum.avg_rating == pytest.approx((3 + 2 + 1 + 0 + 3) / 5, abs=1e-2)
+    assert all_sum.in_system_count == 3
+    assert all_sum.in_system_pct == 60.0
+    assert all_sum.perfect_count == 2
+    assert all_sum.perfect_pct == 40.0
+    assert all_sum.score_counts == {"0": 1, "1": 1, "2": 1, "3": 2}
+    assert all_sum.score_pcts == {"0": 20.0, "1": 20.0, "2": 20.0, "3": 40.0}
+
+    # Passer ordering: P1, P2, P10 (numeric), Unassigned last
+    assert [p.passer_label for p in all_sum.by_passer] == ["P1", "P2", "P10", "Unassigned"]
+    p1 = all_sum.by_passer[0]
+    assert p1.count == 2
+    assert p1.avg_rating == 2.0
+    assert p1.in_system_pct == 50.0
+    assert p1.score_counts == {"0": 0, "1": 1, "2": 0, "3": 1}
+
+    # Server filter excludes #9 (P10) and still ignores out serve (r6)
+    s7 = compute_receive_summary(serves, server_filter="#7")
+    assert s7.scored_count == 4
+    assert s7.avg_rating == 1.5
+    assert s7.in_system_pct == 50.0
+    assert s7.perfect_pct == 25.0
+    assert [p.passer_label for p in s7.by_passer] == ["P1", "P2", "Unassigned"]

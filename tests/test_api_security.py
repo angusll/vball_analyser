@@ -176,6 +176,29 @@ def test_end_to_end_local_workflow_range_calibration_hitter_export(tmp_path: Pat
         assert r_dl.headers["X-Content-Type-Options"] == "nosniff"
         assert len(r_dl.content) > 5000
 
+        # Re-run detection requires CSRF and preserves manual calibration
+        r_no_csrf = client.post(f"/api/sessions/{sid}/rerun", json={})
+        assert r_no_csrf.status_code == 403
+
+        r_rerun = client.post(f"/api/sessions/{sid}/rerun", headers={"X-CSRF-Token": csrf}, json={})
+        assert r_rerun.status_code == 200
+        assert r_rerun.json()["status"] == "queued"
+        assert r_rerun.json()["calibration"]["is_manual"] is True
+
+        rerun_ready = None
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            r = client.get(f"/api/sessions/{sid}")
+            assert r.status_code == 200
+            rerun_ready = r.json()
+            if rerun_ready["status"] in ("ready", "error"):
+                break
+            time.sleep(0.25)
+        assert rerun_ready is not None
+        assert rerun_ready["status"] == "ready"
+        assert rerun_ready["calibration"]["is_manual"] is True
+        assert len(rerun_ready["plays"]) >= 1
+
 
 def test_static_frontend_and_backend_security_hygiene() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -193,3 +216,31 @@ def test_static_frontend_and_backend_security_hygiene() -> None:
     for py_file in src_dir.glob("*.py"):
         text = py_file.read_text(encoding="utf-8")
         assert "0.0.0.0" not in text, f"Server must never bind 0.0.0.0 ({py_file.name})"
+
+
+def test_app_config_host_port_env_override(monkeypatch) -> None:
+    import pytest
+
+    monkeypatch.delenv("VBALL_HOST", raising=False)
+    monkeypatch.delenv("VBALL_PORT", raising=False)
+    default_cfg = AppConfig()
+    assert default_cfg.bind_host == "127.0.0.1"
+    assert default_cfg.default_port == 8081
+
+    # Blank / whitespace values fall back cleanly to defaults
+    monkeypatch.setenv("VBALL_HOST", "   ")
+    monkeypatch.setenv("VBALL_PORT", "  ")
+    blank_cfg = AppConfig()
+    assert blank_cfg.bind_host == "127.0.0.1"
+    assert blank_cfg.default_port == 8081
+
+    monkeypatch.setenv("VBALL_HOST", "0.0.0.0")
+    monkeypatch.setenv("VBALL_PORT", "9090")
+    override_cfg = AppConfig()
+    assert override_cfg.bind_host == "0.0.0.0"
+    assert override_cfg.default_port == 9090
+
+    for bad_port in ("not-a-port", "0", "70000"):
+        monkeypatch.setenv("VBALL_PORT", bad_port)
+        with pytest.raises(ValueError, match="VBALL_PORT"):
+            AppConfig()

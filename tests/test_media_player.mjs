@@ -439,4 +439,46 @@ test("keyboard shortcuts ignore modifier keys, Space repeat, focused buttons, an
     preventDefault: () => { prevented = true; },
   });
   assert.equal(h.video.paused, true);
+  h.documentFake.setOpenDialog(null);
+
+  // Hidden root (e.g., Serve manual-only mode) ignores transport shortcuts
+  h.root.closest = (sel) => (sel === ".hidden" ? { id: "serveVideoCard" } : null);
+  h.documentFake.dispatch("keydown", {
+    code: "Space",
+    target: { tagName: "BODY" },
+    preventDefault: () => { prevented = true; },
+  });
+  assert.equal(h.video.paused, true);
+  h.root.closest = () => null;
+
+  // Focused #seekSlider still allows Space and ArrowRight transport shortcuts
+  h.documentFake.dispatch("keydown", {
+    code: "ArrowRight",
+    target: h.seekSlider,
+    preventDefault: () => { prevented = true; },
+  });
+  assert.equal(h.player.getCurrentFrame(), 1);
+
+  h.documentFake.dispatch("keydown", {
+    code: "Space",
+    target: h.seekSlider,
+    preventDefault: () => { prevented = true; },
+  });
+  assert.equal(h.video.paused, false);
+});
+
+test("loadSession resets seekSlider.value when switching videos with resetTime: false, and play() catches rejections", async () => {
+  const h = makeHarness();
+  h.player.loadSession({ session_id: "sess-a", metadata: { fps: 30, duration_s: 12, width: 1280, height: 720 } }, { resetTime: true });
+  h.player.seekToTime(5.0);
+  assert.equal(h.seekSlider.value, "5");
+
+  h.player.loadSession({ session_id: "sess-b", metadata: { fps: 30, duration_s: 12, width: 1280, height: 720 } }, { resetTime: false });
+  assert.equal(h.seekSlider.value, "0");
+
+  // play() returning a rejected Promise must not throw an unhandled rejection
+  h.video.play = () => Promise.reject(new Error("AbortError"));
+  h.player.play();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(h.video.paused, true);
 });

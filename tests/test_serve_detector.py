@@ -370,3 +370,312 @@ def test_multi_serve_short_clip_detects_both_serves(tmp_path: Path) -> None:
     assert len(events) == 2
     assert events[0].timestamp_s is not None and abs(events[0].timestamp_s - 1.6) < 0.25
     assert events[1].timestamp_s is not None and abs(events[1].timestamp_s - 9.6) < 0.25
+
+
+def _build_receive_pass_scenario(
+    tmp_path: Path,
+    filename: str,
+    setter_court_xy: tuple[float, float] | None,
+    *,
+    overpass_to_blocker: bool = False,
+) -> tuple[Path, CourtCalibration, FakeServePredictor, VideoMetadata]:
+    """Build a synthetic video + ball/track script with 3 passers and an optional setter or overpass."""
+    video_path = tmp_path / filename
+    fps = 15.0
+    duration_s = 6.0
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+
+    p1_px = project_court_to_image(H_inv, 1.8, 6.2)
+    p2_px = project_court_to_image(H_inv, 4.5, 6.5)
+    p3_px = project_court_to_image(H_inv, 7.2, 6.2)
+
+    n_frames = int(fps * duration_s)
+    p1_frames = [_make_pose_frame(i, round(i / fps, 4), p1_px[0], p1_px[1]) for i in range(n_frames)]
+    p2_frames = [_make_pose_frame(i, round(i / fps, 4), p2_px[0], p2_px[1]) for i in range(n_frames)]
+    p3_frames = [_make_pose_frame(i, round(i / fps, 4), p3_px[0], p3_px[1]) for i in range(n_frames)]
+
+    tracks = [
+        PlayerTrack(track_id=1, court_side="attacking", frames=p1_frames),
+        PlayerTrack(track_id=2, court_side="attacking", frames=p2_frames),
+        PlayerTrack(track_id=3, court_side="attacking", frames=p3_frames),
+    ]
+
+    balls: list[BallDetection] = []
+    p2_recv_y = p2_px[1] - 75.0
+    # Serve descends onto P2 chest at frame 24 (t=1.6s)
+    for i in range(10, 25):
+        u = (i - 10) / 14.0
+        balls.append(
+            BallDetection(
+                frame_idx=i,
+                timestamp_s=round(i / fps, 4),
+                x=520.0 + u * (p2_px[0] - 520.0),
+                y=150.0 + u * (p2_recv_y - 150.0),
+                conf=0.9,
+            )
+        )
+
+    if setter_court_xy is not None:
+        setter_px = project_court_to_image(H_inv, setter_court_xy[0], setter_court_xy[1])
+        setter_frames = [
+            _make_pose_frame(i, round(i / fps, 4), setter_px[0], setter_px[1])
+            for i in range(n_frames)
+        ]
+        tracks.append(PlayerTrack(track_id=4, court_side="attacking", frames=setter_frames))
+        setter_hand_y = setter_px[1] - 75.0
+        apex_x = 0.5 * (p2_px[0] + setter_px[0])
+        apex_y = 140.0
+        # Pass rises frames 25..32 to apex, descends frames 33..40 to setter wrists, rebounds frames 41..45
+        for i in range(25, 33):
+            u = (i - 24) / 8.0
+            balls.append(
+                BallDetection(
+                    frame_idx=i,
+                    timestamp_s=round(i / fps, 4),
+                    x=p2_px[0] + u * (apex_x - p2_px[0]),
+                    y=p2_recv_y + u * (apex_y - p2_recv_y),
+                    conf=0.9,
+                )
+            )
+        for i in range(33, 41):
+            u = (i - 32) / 8.0
+            balls.append(
+                BallDetection(
+                    frame_idx=i,
+                    timestamp_s=round(i / fps, 4),
+                    x=apex_x + u * (setter_px[0] - apex_x),
+                    y=apex_y + u * (setter_hand_y - apex_y),
+                    conf=0.9,
+                )
+            )
+        for i in range(41, 46):
+            u = (i - 40) / 5.0
+            balls.append(
+                BallDetection(
+                    frame_idx=i,
+                    timestamp_s=round(i / fps, 4),
+                    x=setter_px[0] - u * 40.0,
+                    y=setter_hand_y - u * 80.0,
+                    conf=0.9,
+                )
+            )
+    elif overpass_to_blocker:
+        blocker_x, blocker_y = 540.0, 345.0
+        blocker_frames = [
+            _make_pose_frame(i, round(i / fps, 4), blocker_x, blocker_y, height=130.0)
+            for i in range(n_frames)
+        ]
+        tracks.append(PlayerTrack(track_id=99, court_side="blocking", frames=blocker_frames))
+        # Ball flies high above net tape (y=120 < 203.68 - 10) into far-side blocker's reach
+        for i in range(25, 34):
+            u = (i - 24) / 9.0
+            balls.append(
+                BallDetection(
+                    frame_idx=i,
+                    timestamp_s=round(i / fps, 4),
+                    x=p2_px[0] + u * (blocker_x - p2_px[0]),
+                    y=p2_recv_y + u * (120.0 - p2_recv_y),
+                    conf=0.9,
+                )
+            )
+        for i in range(34, 41):
+            u = (i - 33) / 7.0
+            balls.append(
+                BallDetection(
+                    frame_idx=i,
+                    timestamp_s=round(i / fps, 4),
+                    x=blocker_x,
+                    y=120.0 + u * 110.0,
+                    conf=0.9,
+                )
+            )
+    else:
+        # Shank high and wide off-screen without contacting any setter or other passer
+        for i in range(25, 33):
+            u = (i - 24) / 8.0
+            balls.append(
+                BallDetection(
+                    frame_idx=i,
+                    timestamp_s=round(i / fps, 4),
+                    x=p2_px[0] - u * 160.0,
+                    y=p2_recv_y - u * 340.0,
+                    conf=0.9,
+                )
+            )
+
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=n_frames, duration_s=duration_s, codec="h264")
+    return video_path, cal, FakeServePredictor(balls, tracks), meta
+
+
+def test_receive_perfect_pass_to_setter_scores_3(tmp_path: Path) -> None:
+    video_path, cal, predictor, meta = _build_receive_pass_scenario(
+        tmp_path, "perfect_pass.mp4", setter_court_xy=(6.2, 1.0)
+    )
+    events = detect_serve_events(video_path, cal, predictor, meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.result == "in"
+    assert ev.passer_label == "P2"
+    assert ev.receive_score == 3
+    assert ev.pass_x_m == pytest.approx(6.2, abs=0.15)
+    assert ev.pass_y_m == pytest.approx(1.0, abs=0.15)
+    assert ev.pass_distance_m is not None and ev.pass_distance_m <= 1.5
+    assert ev.pass_timestamp_s is not None and ev.pass_frame_idx is not None
+
+
+@pytest.mark.parametrize(
+    ("setter_xy", "expected_score"),
+    [
+        ((3.6, 1.0), 2),  # ~2.41m from default target (6.0, 0.8) -> Yellow (2)
+        ((2.0, 1.0), 1),  # ~4.00m from default target (6.0, 0.8) -> Red (1)
+    ],
+)
+def test_receive_off_target_passes_score_2_and_1(
+    tmp_path: Path, setter_xy: tuple[float, float], expected_score: int
+) -> None:
+    video_path, cal, predictor, meta = _build_receive_pass_scenario(
+        tmp_path, f"pass_{expected_score}.mp4", setter_court_xy=setter_xy
+    )
+    events = detect_serve_events(video_path, cal, predictor, meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.passer_label == "P2"
+    assert ev.receive_score == expected_score
+    assert ev.pass_x_m == pytest.approx(setter_xy[0], abs=0.15)
+    assert ev.pass_y_m == pytest.approx(setter_xy[1], abs=0.15)
+
+
+def test_receive_overpass_to_blocker_scores_0(tmp_path: Path) -> None:
+    video_path, cal, predictor, meta = _build_receive_pass_scenario(
+        tmp_path, "overpass.mp4", setter_court_xy=None, overpass_to_blocker=True
+    )
+    events = detect_serve_events(video_path, cal, predictor, meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.result == "in"
+    assert ev.passer_label == "P2"
+    assert ev.receive_score == 0
+    assert ev.pass_x_m is None
+    assert ev.pass_y_m is None
+
+
+def test_receive_ace_scores_0_and_out_is_none(tmp_path: Path) -> None:
+    video_path = tmp_path / "ace_and_out_scores.mp4"
+    fps = 15.0
+    duration_s = 7.0
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+
+    ace_px = project_court_to_image(H_inv, 7.5, 6.0)
+    out_px = project_court_to_image(H_inv, 4.5, 9.8)
+    balls: list[BallDetection] = []
+    for i in range(10, 25):
+        u = (i - 10) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=ace_px[0], y=160.0 + u * (ace_px[1] - 160.0), conf=0.9))
+    for i in range(25, 31):
+        u = (i - 24) / 6.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=ace_px[0], y=ace_px[1] - u * 70.0, conf=0.9))
+    for i in range(68, 83):
+        u = (i - 68) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=out_px[0], y=160.0 + u * (out_px[1] - 160.0), conf=0.9))
+    for i in range(83, 89):
+        u = (i - 82) / 6.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=out_px[0], y=out_px[1] - u * 70.0, conf=0.9))
+
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=int(fps * duration_s), duration_s=duration_s, codec="h264")
+    events = detect_serve_events(video_path, cal, FakeServePredictor(balls, []), meta)
+    assert len(events) == 2
+    assert events[0].result == "ace" and events[0].receive_score == 0
+    assert events[1].result == "out" and events[1].receive_score is None
+
+
+def test_receive_shank_without_setter_contact_scores_0(tmp_path: Path) -> None:
+    video_path, cal, predictor, meta = _build_receive_pass_scenario(
+        tmp_path, "shank.mp4", setter_court_xy=None, overpass_to_blocker=False
+    )
+    events = detect_serve_events(video_path, cal, predictor, meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.result == "in"
+    assert ev.passer_label == "P2"
+    assert ev.receive_score == 0
+    assert ev.pass_x_m is None
+    assert ev.pass_y_m is None
+
+
+def test_filters_stationary_background_fp_and_ignores_bystander_during_rising_pass(tmp_path: Path) -> None:
+    """Stationary gym-wall FPs must not create fake serves, and rising passes must not lock onto bystanders."""
+    video_path, cal, base_predictor, meta = _build_receive_pass_scenario(
+        tmp_path, "static_fp_bystander.mp4", setter_court_xy=(5.5, 1.2)
+    )
+    _H, H_inv = compute_court_homography(cal)
+    p1_px = project_court_to_image(H_inv, 1.8, 6.2)
+
+    # Inject a stationary false-positive wall light on frames 0..24 (higher conf than early noise, spanning >0.8s)
+    noisy_balls = list(base_predictor._balls)
+    for i in range(0, 25):
+        noisy_balls.append(
+            BallDetection(frame_idx=i, timestamp_s=round(i / meta.fps, 4), x=1003.5, y=185.5, conf=0.35)
+        )
+
+    # Add a front-row bystander standing visually along the rising pass path (before apex)
+    bystander_px = project_court_to_image(H_inv, 4.9, 2.4)
+    bystander_frames = [
+        _make_pose_frame(i, round(i / meta.fps, 4), bystander_px[0], bystander_px[1])
+        for i in range(meta.frame_count)
+    ]
+    tracks = list(base_predictor._tracks) + [
+        PlayerTrack(track_id=50, court_side="attacking", frames=bystander_frames)
+    ]
+
+    events = detect_serve_events(video_path, cal, FakeServePredictor(noisy_balls, tracks), meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.passer_label == "P2"
+    assert ev.receive_score == 3
+    assert ev.pass_x_m == pytest.approx(5.5, abs=0.2)
+    assert ev.pass_y_m == pytest.approx(1.2, abs=0.2)
+
+
+def test_continuous_long_rally_beyond_cooldown_does_not_double_record(tmp_path: Path) -> None:
+    """An ongoing rally (>6s after serve #1 with continuous ball flight and no dead-ball gap) logs only 1 serve."""
+    video_path = tmp_path / "long_rally_single_serve.mp4"
+    fps = 15.0
+    duration_s = 12.0
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+    p2_px = project_court_to_image(H_inv, 4.5, 6.2)
+
+    n_frames = int(fps * duration_s)
+    p2_frames = [_make_pose_frame(i, round(i / fps, 4), p2_px[0], p2_px[1]) for i in range(n_frames)]
+    balls: list[BallDetection] = []
+
+    # Real serve #1 received at t=1.6s (frame 24)
+    for i in range(10, 25):
+        u = (i - 10) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=150.0 + u * (310.0 - 150.0), conf=0.9))
+    for i in range(25, 34):
+        u = (i - 24) / 9.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=310.0 - u * 160.0, conf=0.9))
+
+    # Continuous rally activity every ~1.2s (no >=2.2s dead-ball gap)
+    for f_idx in (50, 68, 86, 104, 120):
+        balls.append(BallDetection(frame_idx=f_idx, timestamp_s=round(f_idx / fps, 4), x=520.0, y=120.0, conf=0.8))
+
+    # Rally return descending at t=9.6s (frame 144, >6s after serve #1) -> must NOT be logged as serve #2
+    for i in range(130, 145):
+        u = (i - 130) / 14.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=140.0 + u * (310.0 - 140.0), conf=0.9))
+    for i in range(145, 152):
+        u = (i - 144) / 7.0
+        balls.append(BallDetection(frame_idx=i, timestamp_s=round(i / fps, 4), x=p2_px[0], y=310.0 - u * 120.0, conf=0.9))
+
+    tracks = [PlayerTrack(track_id=2, court_side="attacking", frames=p2_frames)]
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=n_frames, duration_s=duration_s, codec="h264")
+    events = detect_serve_events(video_path, cal, FakeServePredictor(balls, tracks), meta)
+    assert len(events) == 1
+    assert events[0].timestamp_s is not None and abs(events[0].timestamp_s - 1.6) < 0.25
