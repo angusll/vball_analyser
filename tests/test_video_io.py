@@ -7,12 +7,16 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import make_synthetic_baseline_video
+from vball_analyser import video_io
 from vball_analyser.video_io import (
+    NVDEC_MIN_FRAMES,
     ensure_web_playable_mp4,
     extract_keyframe_jpeg,
+    iter_video_frame_batches,
     iter_video_frames,
     parse_byte_range,
     probe_video,
+    should_use_nvdec,
     validate_video_magic_bytes,
 )
 
@@ -68,3 +72,44 @@ def test_magic_bytes_and_byte_ranges() -> None:
     assert parse_byte_range("bytes=-500", 5000) == (4500, 4999)
     with pytest.raises(ValueError):
         parse_byte_range("bytes=6000-7000", 5000)
+
+
+def test_nvdec_threshold_and_automatic_cpu_fallback(
+    synthetic_clip: tuple[Path, dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clip_path, _gt = synthetic_clip
+    assert NVDEC_MIN_FRAMES == 100_000
+    assert should_use_nvdec(None) is False
+    assert should_use_nvdec(50_000) is False
+    assert should_use_nvdec(100_000) is False
+    assert should_use_nvdec(100_001) is True
+
+    cpu_frames = list(iter_video_frames(clip_path, start_s=0.0, end_s=1.0, sample_fps=8.0, use_nvdec=False))
+    assert len(cpu_frames) >= 6
+
+    # Simulate NVDEC unavailable -> automatic CPU fallback returns identical frame indices
+    monkeypatch.setattr(video_io, "_try_open_nvdec_container", lambda _path: None)
+    fallback_frames = list(iter_video_frames(clip_path, start_s=0.0, end_s=1.0, sample_fps=8.0, use_nvdec=True))
+    assert [f[0] for f in fallback_frames] == [f[0] for f in cpu_frames]
+
+
+def test_iter_video_frame_batches_streams_exact_frames_and_stops_cleanly(
+    synthetic_clip: tuple[Path, dict],
+) -> None:
+    clip_path, _gt = synthetic_clip
+    direct = list(iter_video_frames(clip_path, start_s=0.0, end_s=1.5, sample_fps=10.0, use_nvdec=False))
+    batches = list(
+        iter_video_frame_batches(
+            clip_path, start_s=0.0, end_s=1.5, sample_fps=10.0, batch_size=4, use_nvdec=False, prefetch_batches=1
+        )
+    )
+    assert len(batches) >= 3
+    assert all(1 <= len(b) <= 4 for b in batches)
+    flat = [item for b in batches for item in b]
+    assert [f[0] for f in flat] == [f[0] for f in direct]
+
+    # Early break should shut down producer thread cleanly without hanging
+    gen = iter_video_frame_batches(clip_path, start_s=0.0, end_s=1.5, sample_fps=10.0, batch_size=2, use_nvdec=False)
+    first_batch = next(gen)
+    assert len(first_batch) == 2
+    gen.close()

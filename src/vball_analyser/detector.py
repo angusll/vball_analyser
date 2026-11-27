@@ -28,7 +28,12 @@ from vball_analyser.models import (
     VideoMetadata,
 )
 from vball_analyser.trajectory import fit_setting_path
-from vball_analyser.video_io import extract_keyframe_jpeg, iter_video_frames
+from vball_analyser.video_io import (
+    extract_keyframe_jpeg,
+    iter_video_frame_batches,
+    iter_video_frames,
+    should_use_nvdec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -757,11 +762,25 @@ def scan_candidate_plays(
     if metadata.duration_s <= DEFAULT_CONFIG.short_clip_max_sec:
         return [(0.0, metadata.duration_s)]
 
-    coarse_frames = list(iter_video_frames(video_path, start_s=0.0, end_s=metadata.duration_s, sample_fps=10.0))
-    if not coarse_frames:
+    batch_size = int(getattr(predictor, "_batch_size", 16) or 16)
+    use_nvdec = should_use_nvdec(metadata.frame_count)
+    balls: list[BallDetection] = []
+    people: list[tuple[int, float, tuple[float, float, float, float]]] = []
+    seen_any = False
+    for batch in iter_video_frame_batches(
+        video_path,
+        start_s=0.0,
+        end_s=metadata.duration_s,
+        sample_fps=10.0,
+        batch_size=batch_size,
+        use_nvdec=use_nvdec,
+    ):
+        seen_any = True
+        b_chunk, p_chunk = predictor.scan_coarse(batch, calibration)
+        balls.extend(b_chunk)
+        people.extend(p_chunk)
+    if not seen_any:
         return [(0.0, min(metadata.duration_s, 5.0))]
-
-    balls, people = predictor.scan_coarse(coarse_frames, calibration)
     # Identify moving balls above net tape (+35px margin)
     by_ts: dict[float, list[BallDetection]] = {}
     for b in balls:

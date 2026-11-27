@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 from fractions import Fraction
 from pathlib import Path
 from typing import Iterator
@@ -14,6 +16,41 @@ import numpy as np
 from vball_analyser.models import VideoMetadata
 
 logger = logging.getLogger(__name__)
+
+# Enable NVIDIA NVDEC hardware decoding only on long videos (>100k frames, ~55+ min at 30fps)
+# where GPU decode amortization outweighs CUDA hwcontext startup overhead.
+NVDEC_MIN_FRAMES = 100_000
+
+
+def should_use_nvdec(frame_count: int | None) -> bool:
+    """Return True when a video exceeds NVDEC_MIN_FRAMES and qualifies for NVDEC decoding."""
+    return frame_count is not None and frame_count > NVDEC_MIN_FRAMES
+
+
+def _estimate_stream_frames(container: av.container.InputContainer, stream: av.video.stream.VideoStream) -> int:
+    frames = int(stream.frames or 0)
+    if frames > 0:
+        return frames
+    fps = _stream_fps(stream)
+    if stream.duration is not None and stream.time_base is not None:
+        return max(0, int(round(float(stream.duration * stream.time_base) * fps)))
+    if container.duration is not None:
+        return max(0, int(round(float(container.duration / av.time_base) * fps)))
+    return 0
+
+
+def _try_open_nvdec_container(path: Path) -> av.container.InputContainer | None:
+    """Open video container with PyAV CUDA NVDEC hardware acceleration, or return None on fallback."""
+    try:
+        from av.codec.hwaccel import HWAccel, hwdevices_available
+
+        if "cuda" not in hwdevices_available():
+            return None
+        hwaccel = HWAccel(device_type="cuda", allow_software_fallback=True)
+        return av.open(str(path), hwaccel=hwaccel)
+    except Exception as exc:
+        logger.warning("NVDEC hardware decode unavailable for %s (%s); falling back to CPU.", path.name, exc)
+        return None
 
 
 def validate_video_magic_bytes(header: bytes, extension: str) -> bool:
@@ -137,53 +174,169 @@ def ensure_web_playable_mp4(source_path: Path, dest_dir: Path) -> Path:
     return proxy_path
 
 
+def _decode_container_frames(
+    container: av.container.InputContainer,
+    start_s: float,
+    end_s: float | None,
+    sample_fps: float | None,
+) -> Iterator[tuple[int, float, np.ndarray]]:
+    if not container.streams.video:
+        return
+    stream = container.streams.video[0]
+    fps = _stream_fps(stream)
+    time_base = float(stream.time_base) if stream.time_base is not None else (1.0 / fps)
+
+    if start_s > 0.25 and stream.time_base is not None:
+        seek_ts = max(0, int((start_s - 0.15) / time_base))
+        try:
+            container.seek(seek_ts, any_frame=False, backward=True, stream=stream)
+        except av.AVError:
+            pass
+
+    min_step_s = (1.0 / sample_fps) if (sample_fps and sample_fps > 0) else 0.0
+    next_emit_s = max(0.0, start_s)
+    sequential_idx = 0
+
+    for frame in container.decode(video=0):
+        if frame.pts is not None:
+            ts = float(frame.pts * time_base)
+            frame_idx = max(0, int(round(ts * fps)))
+        else:
+            frame_idx = sequential_idx
+            ts = frame_idx / fps
+        sequential_idx += 1
+
+        if ts < start_s - (0.5 / fps):
+            continue
+        if end_s is not None and ts > end_s + (0.5 / fps):
+            break
+        if min_step_s > 0 and ts + 1e-4 < next_emit_s:
+            continue
+
+        if min_step_s > 0:
+            while next_emit_s <= ts + 1e-4:
+                next_emit_s += min_step_s
+
+        bgr = frame.to_ndarray(format="bgr24")
+        yield frame_idx, ts, bgr
+
+
 def iter_video_frames(
     path: Path,
     start_s: float = 0.0,
     end_s: float | None = None,
     sample_fps: float | None = None,
+    use_nvdec: bool | None = None,
 ) -> Iterator[tuple[int, float, np.ndarray]]:
-    """Decode frames from video in [start_s, end_s] optionally downsampled to sample_fps."""
+    """Decode frames from video in [start_s, end_s] optionally downsampled to sample_fps.
+
+    When ``use_nvdec`` is ``True`` (or ``None`` and the video has > 100k frames), attempts
+    NVIDIA NVDEC hardware decoding and automatically falls back to CPU decoding on failure.
+    """
+    if use_nvdec is True:
+        nv_container = _try_open_nvdec_container(path)
+        if nv_container is not None:
+            yielded_any = False
+            try:
+                with nv_container:
+                    logger.info("Decoding %s with NVIDIA NVDEC hardware acceleration", path.name)
+                    for item in _decode_container_frames(nv_container, start_s, end_s, sample_fps):
+                        yielded_any = True
+                        yield item
+                return
+            except Exception as exc:
+                if yielded_any:
+                    raise
+                logger.warning(
+                    "NVDEC decode failed before first frame on %s (%s); falling back to CPU.",
+                    path.name,
+                    exc,
+                )
+
     with av.open(str(path)) as container:
         if not container.streams.video:
             return
-        stream = container.streams.video[0]
-        fps = _stream_fps(stream)
-        time_base = float(stream.time_base) if stream.time_base is not None else (1.0 / fps)
+        if use_nvdec is None and should_use_nvdec(_estimate_stream_frames(container, container.streams.video[0])):
+            # Re-open with NVDEC for long (>100k frames) videos
+            pass
+        else:
+            yield from _decode_container_frames(container, start_s, end_s, sample_fps)
+            return
 
-        if start_s > 0.25 and stream.time_base is not None:
-            seek_ts = max(0, int((start_s - 0.15) / time_base))
+    yield from iter_video_frames(path, start_s=start_s, end_s=end_s, sample_fps=sample_fps, use_nvdec=True)
+
+
+def iter_video_frame_batches(
+    path: Path,
+    start_s: float = 0.0,
+    end_s: float | None = None,
+    sample_fps: float | None = None,
+    batch_size: int = 16,
+    use_nvdec: bool | None = None,
+    prefetch_batches: int = 2,
+) -> Iterator[list[tuple[int, float, np.ndarray]]]:
+    """Stream decoded frames in fixed-size batches using a bounded prefetch queue to prevent OOM."""
+    bsize = max(1, int(batch_size))
+    q: queue.Queue[object] = queue.Queue(maxsize=max(1, int(prefetch_batches)))
+    sentinel = object()
+    stop_event = threading.Event()
+    producer_error: list[BaseException] = []
+
+    def _put(item: object) -> bool:
+        while not stop_event.is_set():
             try:
-                container.seek(seek_ts, any_frame=False, backward=True, stream=stream)
-            except av.AVError:
-                pass
-
-        min_step_s = (1.0 / sample_fps) if (sample_fps and sample_fps > 0) else 0.0
-        next_emit_s = max(0.0, start_s)
-        sequential_idx = 0
-
-        for frame in container.decode(video=0):
-            if frame.pts is not None:
-                ts = float(frame.pts * time_base)
-                frame_idx = max(0, int(round(ts * fps)))
-            else:
-                frame_idx = sequential_idx
-                ts = frame_idx / fps
-            sequential_idx += 1
-
-            if ts < start_s - (0.5 / fps):
+                q.put(item, timeout=0.1)
+                return True
+            except queue.Full:
                 continue
-            if end_s is not None and ts > end_s + (0.5 / fps):
+        return False
+
+    def _producer() -> None:
+        try:
+            batch: list[tuple[int, float, np.ndarray]] = []
+            for item in iter_video_frames(
+                path, start_s=start_s, end_s=end_s, sample_fps=sample_fps, use_nvdec=use_nvdec
+            ):
+                if stop_event.is_set():
+                    break
+                batch.append(item)
+                if len(batch) >= bsize:
+                    if not _put(batch):
+                        break
+                    batch = []
+            if batch and not stop_event.is_set():
+                _put(batch)
+        except BaseException as exc:
+            producer_error.append(exc)
+        finally:
+            while True:
+                try:
+                    q.put(sentinel, timeout=0.1)
+                    break
+                except queue.Full:
+                    if stop_event.is_set():
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            pass
+
+    thread = threading.Thread(target=_producer, name="video-batch-decoder", daemon=True)
+    thread.start()
+    try:
+        while True:
+            item = q.get()
+            if item is sentinel:
                 break
-            if min_step_s > 0 and ts + 1e-4 < next_emit_s:
-                continue
-
-            if min_step_s > 0:
-                while next_emit_s <= ts + 1e-4:
-                    next_emit_s += min_step_s
-
-            bgr = frame.to_ndarray(format="bgr24")
-            yield frame_idx, ts, bgr
+            yield item  # type: ignore[misc]
+        if producer_error:
+            raise producer_error[0]
+    finally:
+        stop_event.set()
+        while thread.is_alive():
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                thread.join(timeout=0.1)
 
 
 def extract_keyframe_jpeg(path: Path, frame_idx: int, out_path: Path, max_width: int = 360) -> Path:
