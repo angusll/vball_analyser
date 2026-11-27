@@ -221,6 +221,20 @@ def _decode_container_frames(
         yield frame_idx, ts, bgr
 
 
+def _estimate_window_frames(
+    container: av.container.InputContainer,
+    stream: av.video.stream.VideoStream,
+    start_s: float,
+    end_s: float | None,
+) -> int:
+    fps = _stream_fps(stream)
+    eff_start = max(0.0, start_s)
+    if end_s is not None:
+        return max(0, int(round(max(0.0, end_s - eff_start) * fps)))
+    total = _estimate_stream_frames(container, stream)
+    return max(0, total - int(round(eff_start * fps)))
+
+
 def iter_video_frames(
     path: Path,
     start_s: float = 0.0,
@@ -230,8 +244,8 @@ def iter_video_frames(
 ) -> Iterator[tuple[int, float, np.ndarray]]:
     """Decode frames from video in [start_s, end_s] optionally downsampled to sample_fps.
 
-    When ``use_nvdec`` is ``True`` (or ``None`` and the video has > 100k frames), attempts
-    NVIDIA NVDEC hardware decoding and automatically falls back to CPU decoding on failure.
+    When ``use_nvdec`` is ``True`` (or ``None`` and the requested slice exceeds 100k frames),
+    attempts NVIDIA NVDEC hardware decoding and automatically falls back to CPU on failure.
     """
     if use_nvdec is True:
         nv_container = _try_open_nvdec_container(path)
@@ -239,7 +253,7 @@ def iter_video_frames(
             yielded_any = False
             try:
                 with nv_container:
-                    logger.info("Decoding %s with NVIDIA NVDEC hardware acceleration", path.name)
+                    logger.info("Attempting NVIDIA NVDEC hardware decode (software fallback enabled) for %s", path.name)
                     for item in _decode_container_frames(nv_container, start_s, end_s, sample_fps):
                         yielded_any = True
                         yield item
@@ -256,8 +270,10 @@ def iter_video_frames(
     with av.open(str(path)) as container:
         if not container.streams.video:
             return
-        if use_nvdec is None and should_use_nvdec(_estimate_stream_frames(container, container.streams.video[0])):
-            # Re-open with NVDEC for long (>100k frames) videos
+        if use_nvdec is None and should_use_nvdec(
+            _estimate_window_frames(container, container.streams.video[0], start_s, end_s)
+        ):
+            # Re-open with NVDEC only when the requested slice itself exceeds 100k frames
             pass
         else:
             yield from _decode_container_frames(container, start_s, end_s, sample_fps)
@@ -277,12 +293,11 @@ def iter_video_frame_batches(
 ) -> Iterator[list[tuple[int, float, np.ndarray]]]:
     """Stream decoded frames in fixed-size batches using a bounded prefetch queue to prevent OOM."""
     bsize = max(1, int(batch_size))
-    q: queue.Queue[object] = queue.Queue(maxsize=max(1, int(prefetch_batches)))
-    sentinel = object()
+    q: queue.Queue[list[tuple[int, float, np.ndarray]] | None] = queue.Queue(maxsize=max(1, int(prefetch_batches)))
     stop_event = threading.Event()
     producer_error: list[BaseException] = []
 
-    def _put(item: object) -> bool:
+    def _put(item: list[tuple[int, float, np.ndarray]] | None) -> bool:
         while not stop_event.is_set():
             try:
                 q.put(item, timeout=0.1)
@@ -309,25 +324,21 @@ def iter_video_frame_batches(
         except BaseException as exc:
             producer_error.append(exc)
         finally:
-            while True:
+            while not stop_event.is_set():
                 try:
-                    q.put(sentinel, timeout=0.1)
+                    q.put(None, timeout=0.1)
                     break
                 except queue.Full:
-                    if stop_event.is_set():
-                        try:
-                            q.get_nowait()
-                        except queue.Empty:
-                            pass
+                    continue
 
     thread = threading.Thread(target=_producer, name="video-batch-decoder", daemon=True)
     thread.start()
     try:
         while True:
             item = q.get()
-            if item is sentinel:
+            if item is None:
                 break
-            yield item  # type: ignore[misc]
+            yield item
         if producer_error:
             raise producer_error[0]
     finally:

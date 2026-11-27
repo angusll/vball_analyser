@@ -513,7 +513,7 @@ def _extract_candidate_windows(
     if metadata.duration_s <= DEFAULT_CONFIG.short_clip_max_sec:
         return [(0.0, metadata.duration_s)]
 
-    batch_size = int(getattr(predictor, "_batch_size", 16) or 16)
+    batch_size = int(getattr(predictor, "batch_size", None) or getattr(predictor, "_batch_size", 16) or 16)
     use_nvdec = should_use_nvdec(metadata.frame_count)
     coarse_balls: list[BallDetection] = []
     for batch in iter_video_frame_batches(
@@ -537,9 +537,10 @@ def _extract_candidate_windows(
         (max(0.0, b.timestamp_s - 2.5), min(metadata.duration_s, b.timestamp_s + 3.0))
         for b in landings
     ]
+    max_merged_window_s = 25.0
     merged: list[tuple[float, float]] = []
     for ws, we in sorted(raw_windows):
-        if merged and ws <= merged[-1][1]:
+        if merged and ws <= merged[-1][1] and (max(merged[-1][1], we) - merged[-1][0]) <= max_merged_window_s:
             merged[-1] = (merged[-1][0], max(merged[-1][1], we))
         else:
             merged.append((ws, we))
