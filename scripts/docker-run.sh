@@ -66,6 +66,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
+    echo "Invalid --port value: '${PORT}' (must be an integer between 1 and 65535)" >&2
+    exit 1
+fi
+
+if [[ -n "$VIDEOS_DIR" && ! -d "$VIDEOS_DIR" ]]; then
+    echo "Videos directory does not exist: ${VIDEOS_DIR}" >&2
+    exit 1
+fi
+
 if [[ "$USE_GPU" == "true" ]]; then
     IMAGE_TAG="vball-analyser:gpu"
 else
@@ -85,7 +95,8 @@ fi
 RUN_ARGS=(
     --rm
     --name vball-analyser
-    -p "${PORT}:8081"
+    --user "$(id -u):$(id -g)"
+    -p "127.0.0.1:${PORT}:8081"
     -v "${PROJECT_ROOT}/data:/app/data"
     -v "${PROJECT_ROOT}/models:/app/models"
 )

@@ -6,8 +6,9 @@ services:
       args:
         GPU: "${VBALL_GPU:-false}"
     image: vball-analyser:${VBALL_IMAGE_TAG:-latest}
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
-      - "${VBALL_PORT:-8081}:8081"
+      - "${VBALL_BIND_HOST:-127.0.0.1}:${VBALL_PORT:-8081}:8081"
     environment:
       VBALL_HOST: "0.0.0.0"
       VBALL_PORT: "8081"
@@ -19,5 +20,5 @@ services:
     volumes:
       - ./data:/app/data
       - ./models:/app/models
-      - "${VBALL_VIDEOS_DIR:-./data}:/videos:ro"
+      - "${VBALL_VIDEOS_DIR:-./videos}:/videos:ro"
     restart: unless-stopped

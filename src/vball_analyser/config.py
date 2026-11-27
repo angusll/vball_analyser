@@ -19,6 +19,24 @@ def _parse_allowed_local_dirs() -> tuple[Path, ...]:
     return (PROJECT_ROOT.resolve(), Path.home().resolve())
 
 
+def _parse_bind_host() -> str:
+    raw = os.environ.get("VBALL_HOST", "").strip()
+    return raw or "127.0.0.1"
+
+
+def _parse_default_port() -> int:
+    raw = os.environ.get("VBALL_PORT", "").strip()
+    if not raw:
+        return 8081
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid VBALL_PORT value: {raw!r} (must be an integer 1..65535)") from exc
+    if not (1 <= port <= 65535):
+        raise ValueError(f"Invalid VBALL_PORT value: {port} (must be between 1 and 65535)")
+    return port
+
+
 @dataclass(frozen=True)
 class AppConfig:
     data_dir: Path = field(default_factory=lambda: Path(os.environ.get("VBALL_DATA_DIR", str(PROJECT_ROOT / "data"))).resolve())
@@ -30,8 +48,8 @@ class AppConfig:
     short_clip_max_sec: float = 20.0
     default_net_height_m: float = 2.43
     net_width_m: float = 9.0
-    bind_host: str = field(default_factory=lambda: os.environ.get("VBALL_HOST", "127.0.0.1"))
-    default_port: int = field(default_factory=lambda: int(os.environ.get("VBALL_PORT", "8081")))
+    bind_host: str = field(default_factory=_parse_bind_host)
+    default_port: int = field(default_factory=_parse_default_port)
     session_ttl_seconds: int = 28800
     rate_limit_requests: int = 300
     rate_limit_window_s: float = 60.0

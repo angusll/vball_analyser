@@ -196,14 +196,28 @@ def test_static_frontend_and_backend_security_hygiene() -> None:
 
 
 def test_app_config_host_port_env_override(monkeypatch) -> None:
+    import pytest
+
     monkeypatch.delenv("VBALL_HOST", raising=False)
     monkeypatch.delenv("VBALL_PORT", raising=False)
     default_cfg = AppConfig()
     assert default_cfg.bind_host == "127.0.0.1"
     assert default_cfg.default_port == 8081
 
+    # Blank / whitespace values fall back cleanly to defaults
+    monkeypatch.setenv("VBALL_HOST", "   ")
+    monkeypatch.setenv("VBALL_PORT", "  ")
+    blank_cfg = AppConfig()
+    assert blank_cfg.bind_host == "127.0.0.1"
+    assert blank_cfg.default_port == 8081
+
     monkeypatch.setenv("VBALL_HOST", "0.0.0.0")
     monkeypatch.setenv("VBALL_PORT", "9090")
     override_cfg = AppConfig()
     assert override_cfg.bind_host == "0.0.0.0"
     assert override_cfg.default_port == 9090
+
+    for bad_port in ("not-a-port", "0", "70000"):
+        monkeypatch.setenv("VBALL_PORT", bad_port)
+        with pytest.raises(ValueError, match="VBALL_PORT"):
+            AppConfig()

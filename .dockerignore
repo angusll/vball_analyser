@@ -3,6 +3,8 @@
 .venv/
 .pytest_cache/
 .superpowers/
+.env
+.env.*
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -10,8 +12,11 @@ build/
 dist/
 data/
 models/
+videos/
 docs/
 tests/
+Dockerfile
+docker-compose*.yml
 .vball_secret
 *.pt
 *.engine

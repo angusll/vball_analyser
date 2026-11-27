@@ -4,6 +4,7 @@ services:
       args:
         GPU: "true"
     image: vball-analyser:gpu
+    shm_size: "1gb"
     environment:
       VBALL_DEVICE: "${VBALL_DEVICE:-cuda:0}"
     deploy:

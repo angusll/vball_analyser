@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
@@ -59,7 +59,9 @@ ENV VBALL_GPU_BUILD=true \
 
 FROM runtime-${GPU} AS final
 
-ENV VBALL_HOST=0.0.0.0 \
+ENV HOME=/tmp \
+    YOLO_CONFIG_DIR=/tmp/ultralytics \
+    VBALL_HOST=0.0.0.0 \
     VBALL_PORT=8081 \
     VBALL_DATA_DIR=/app/data \
     VBALL_MODELS_DIR=/app/models \
@@ -71,6 +73,6 @@ USER appuser
 EXPOSE 8081
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"VBALL_PORT\", \"8081\")}/')" || exit 1
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"VBALL_PORT\", \"8081\")}/static/styles.css', timeout=4)" || exit 1
 
 CMD ["vball-analyser"]
