@@ -675,14 +675,13 @@
 
     const [r3, r2, r1] = getRingRadii();
     const rings = [
-      { idx: 2, score: "1", r: r1, fill: "rgba(239, 68, 68, 0.22)", stroke: "rgba(239, 68, 68, 0.78)", handleColor: "#ef4444", labelColor: "rgba(252, 165, 165, 0.9)", labelDist: 0.5 * (r2 + r1) },
-      { idx: 1, score: "2", r: r2, fill: "rgba(234, 179, 8, 0.26)", stroke: "rgba(234, 179, 8, 0.84)", handleColor: "#eab308", labelColor: "rgba(253, 224, 71, 0.92)", labelDist: 0.5 * (r3 + r2) },
-      { idx: 0, score: "3", r: r3, fill: "rgba(34, 197, 94, 0.30)", stroke: "rgba(34, 197, 94, 0.88)", handleColor: "#22c55e", labelColor: "rgba(134, 239, 172, 0.95)", labelDist: r3 * 0.62 },
+      { score: "1", r: r1, fill: "rgba(239, 68, 68, 0.22)", stroke: "rgba(239, 68, 68, 0.78)", labelColor: "rgba(252, 165, 165, 0.9)", labelDist: 0.5 * (r2 + r1) },
+      { score: "2", r: r2, fill: "rgba(234, 179, 8, 0.26)", stroke: "rgba(234, 179, 8, 0.84)", labelColor: "rgba(253, 224, 71, 0.92)", labelDist: 0.5 * (r3 + r2) },
+      { score: "3", r: r3, fill: "rgba(34, 197, 94, 0.30)", stroke: "rgba(34, 197, 94, 0.88)", labelColor: "rgba(134, 239, 172, 0.95)", labelDist: r3 * 0.62 },
     ];
 
     for (const ring of rings) {
       const rPx = ring.r * tf.scale;
-      const isDraggingRing = sState.dragTarget && sState.dragTarget.type === "ring" && sState.dragTarget.ringIdx === ring.idx;
       // Repaint base court color inside each inner circle so semi-transparent tints stay pure
       ctx.fillStyle = "#142642";
       ctx.beginPath();
@@ -694,14 +693,13 @@
       ctx.arc(tPx.x, tPx.y, rPx, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.strokeStyle = isDraggingRing ? "#ffffff" : ring.stroke;
-      ctx.lineWidth = isDraggingRing ? 2.8 : 1.8;
+      ctx.strokeStyle = ring.stroke;
+      ctx.lineWidth = 1.8;
       ctx.stroke();
     }
 
     // Subtle ring score labels (3, 2, 1) along lower-left diagonal from setter target
     const labelAngle = Math.PI * 0.65;
-    const handleAngle = Math.PI * 0.78;
     ctx.font = "700 13px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -711,18 +709,6 @@
       const lPx = tf.toPx(lx, ly);
       ctx.fillStyle = ring.labelColor;
       ctx.fillText(ring.score, lPx.x, lPx.y);
-
-      // Subtle resize handle knob on each ring's edge
-      const hx = target.x + Math.cos(handleAngle) * ring.r;
-      const hy = target.y + Math.sin(handleAngle) * ring.r;
-      const hPx = tf.toPx(hx, hy);
-      ctx.fillStyle = ring.handleColor;
-      ctx.strokeStyle = "#090d16";
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.arc(hPx.x, hPx.y, 4.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
     }
 
     // Subtle "0" label in unshaded court area
@@ -1816,27 +1802,6 @@
             return;
           }
         }
-
-        // Hit-test concentric scoring ring perimeters (drag to resize)
-        const { x_m: clickXm, y_m: clickYm } = tf.toCourt(pos.x, pos.y);
-        if (clickXm >= 0 && clickXm <= COURT_W && clickYm >= 0 && clickYm <= COURT_L) {
-          const distPx = Math.hypot(pos.x - tPx.x, pos.y - tPx.y);
-          const radii = getRingRadii();
-          let bestIdx = -1;
-          let bestDelta = 10;
-          for (let i = 0; i < radii.length; i++) {
-            const delta = Math.abs(distPx - radii[i] * tf.scale);
-            if (delta <= bestDelta) {
-              bestDelta = delta;
-              bestIdx = i;
-            }
-          }
-          if (bestIdx !== -1) {
-            sState.dragTarget = { type: "ring", ringIdx: bestIdx, startX: pos.x, startY: pos.y, moved: false };
-            sEls.courtCanvas.setPointerCapture(ev.pointerId);
-            return;
-          }
-        }
         return;
       }
 
@@ -1879,9 +1844,7 @@
           const target = getSetterTarget();
           const tPx = tf.toPx(target.x, target.y);
           const distPx = Math.hypot(pos.x - tPx.x, pos.y - tPx.y);
-          const radii = getRingRadii();
-          const nearRing = radii.some((r) => Math.abs(distPx - r * tf.scale) <= 10);
-          sEls.courtCanvas.style.cursor = distPx <= 15 ? "grab" : nearRing ? "ew-resize" : "crosshair";
+          sEls.courtCanvas.style.cursor = distPx <= 15 ? "grab" : "crosshair";
         } else {
           sEls.courtCanvas.style.cursor = "crosshair";
         }
@@ -1900,15 +1863,6 @@
         }
         sState.session.setter_target.x = Math.max(0.5, Math.min(8.5, x_m));
         sState.session.setter_target.y = Math.max(0.2, Math.min(4.0, y_m));
-        refreshLocalReceiveScores();
-        renderCourt();
-      } else if (sState.dragTarget.type === "ring") {
-        const target = getSetterTarget();
-        const nextDist = Math.hypot(x_m - target.x, y_m - target.y);
-        const cur = getRingRadii();
-        cur[sState.dragTarget.ringIdx] = nextDist;
-        sState.session.receive_ring_radii_m = normalizeLocalRingRadii(cur, sState.dragTarget.ringIdx);
-        syncRingSliders();
         refreshLocalReceiveScores();
         renderCourt();
       } else if (sState.dragTarget.type === "pass") {
@@ -1963,12 +1917,6 @@
             const payload = await postServe(
               `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
               { setter_target: { x: target.x, y: target.y } }
-            );
-            applyServePayload(payload);
-          } else if (drag.type === "ring") {
-            const payload = await postServe(
-              `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
-              { receive_ring_radii_m: getRingRadii() }
             );
             applyServePayload(payload);
           } else if (drag.type === "pass") {
