@@ -29,6 +29,8 @@
       this._duration = 0;
       this._videoWidth = 1280;
       this._videoHeight = 720;
+      this._playbackRate = 1;
+      this._renderLoopToken = 0;
       this._adapter = null;
       this._resizeObserver = null;
 
@@ -117,14 +119,18 @@
           }
           if (this.video.videoWidth > 0) this._videoWidth = this.video.videoWidth;
           if (this.video.videoHeight > 0) this._videoHeight = this.video.videoHeight;
+          this.video.defaultPlaybackRate = this._playbackRate;
+          this.video.playbackRate = this._playbackRate;
           this.requestRender();
         });
 
         this.video.addEventListener("play", () => {
           this._updatePlayPauseLabel();
+          const token = ++this._renderLoopToken;
           const tick = () => {
+            if (token !== this._renderLoopToken) return;
             this.requestRender();
-            if (!this.video.paused && !this.video.ended) {
+            if (!this.video.paused && !this.video.ended && token === this._renderLoopToken) {
               if (typeof this.video.requestVideoFrameCallback === "function") {
                 this.video.requestVideoFrameCallback(tick);
               } else {
@@ -135,8 +141,14 @@
           tick();
         });
 
-        this.video.addEventListener("pause", () => this._updatePlayPauseLabel());
-        this.video.addEventListener("ended", () => this._updatePlayPauseLabel());
+        this.video.addEventListener("pause", () => {
+          this._renderLoopToken += 1;
+          this._updatePlayPauseLabel();
+        });
+        this.video.addEventListener("ended", () => {
+          this._renderLoopToken += 1;
+          this._updatePlayPauseLabel();
+        });
       }
 
       window.addEventListener("resize", () => this.requestRender());
@@ -147,17 +159,22 @@
       }
 
       document.addEventListener("keydown", (ev) => {
+        if (typeof document.querySelector === "function" && document.querySelector("dialog[open]")) {
+          return;
+        }
         const tag = ev.target && ev.target.tagName ? ev.target.tagName.toUpperCase() : "";
-        const inFormField = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
+        const isEditable = Boolean(ev.target && ev.target.isContentEditable);
+        const inFormField = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || isEditable;
 
         if (this._adapter && typeof this._adapter.onKeyDown === "function") {
           const handled = this._adapter.onKeyDown(ev, this);
           if (handled === true) return;
         }
 
-        if (inFormField || !this.hasVideo()) return;
+        if (inFormField || ev.ctrlKey || ev.metaKey || ev.altKey || !this.hasVideo()) return;
 
         if (ev.code === "Space") {
+          if (ev.repeat || tag === "BUTTON" || tag === "A") return;
           ev.preventDefault();
           this.togglePlay();
         } else if (ev.code === "ArrowLeft") {
@@ -200,6 +217,13 @@
       const nextId = videoSession.session_id;
       const changed = this._sessionId !== nextId || !this.hasVideo();
 
+      if (changed) {
+        this._fps = 30;
+        this._duration = 0;
+        this._videoWidth = 1280;
+        this._videoHeight = 720;
+      }
+
       this._session = videoSession;
       this._sessionId = nextId;
       if (Number.isFinite(meta.fps) && meta.fps > 0) this._fps = meta.fps;
@@ -208,12 +232,13 @@
       if (Number.isFinite(meta.height) && meta.height > 0) this._videoHeight = meta.height;
 
       const targetSrc = `/api/sessions/${encodeURIComponent(nextId)}/video`;
-      const prevRate = this.video ? (this.video.playbackRate || 1) : 1;
 
       if (changed && this.video) {
+        this._renderLoopToken += 1;
         this.video.pause();
         this.video.src = targetSrc;
-        this.video.playbackRate = prevRate;
+        this.video.defaultPlaybackRate = this._playbackRate;
+        this.video.playbackRate = this._playbackRate;
         if (resetTime) {
           this.video.currentTime = 0;
         }
@@ -234,10 +259,13 @@
     }
 
     clear() {
+      this._renderLoopToken += 1;
       this._session = null;
       this._sessionId = null;
       this._fps = 30;
       this._duration = 0;
+      this._videoWidth = 1280;
+      this._videoHeight = 720;
       if (this.video) {
         this.video.pause();
         this.video.src = "";
@@ -337,7 +365,11 @@
 
     setPlaybackRate(rate) {
       const safe = Number(rate) || 1;
-      if (this.video) this.video.playbackRate = safe;
+      this._playbackRate = safe;
+      if (this.video) {
+        this.video.defaultPlaybackRate = safe;
+        this.video.playbackRate = safe;
+      }
       for (const btn of this.speedBtns) {
         const btnRate = parseFloat(btn.getAttribute("data-speed"));
         const active = Math.abs(btnRate - safe) < 1e-4;

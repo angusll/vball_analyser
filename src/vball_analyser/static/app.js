@@ -420,6 +420,7 @@ function syncActiveKeyframeHighlight(frameIdx) {
 
 function renderStudioTimeline(ctx, player, layout) {
   if (!state.session) return;
+  if (player.hasVideo() && player.getSessionId() !== state.session.session_id) return;
   const { pad, usableW, trackY, trackH, duration } = layout;
   const activePlay = getActivePlay();
 
@@ -456,6 +457,7 @@ function renderOverlay() {
 
 function renderStudioOverlay(ctx, player, frameIdx) {
   if (!state.session) return;
+  if (player.hasVideo() && player.getSessionId() !== state.session.session_id) return;
   const cal = state.session.calibration;
 
   // Net top tape reference
@@ -966,13 +968,18 @@ function applySession(sess, resetVideoSrc) {
   updateCalScaleBadge();
   els.netHeightSelect.value = String(sess.calibration.net_height_m || 2.43);
 
+  const studioActive = state.activeTab === "studio";
   if (resetVideoSrc || prevId !== sess.session_id) {
-    mediaPlayer.loadSession(sess, { resetTime: Boolean(resetVideoSrc && prevId !== sess.session_id) });
+    if (studioActive) {
+      mediaPlayer.loadSession(sess, { resetTime: Boolean(resetVideoSrc && prevId !== sess.session_id) });
+    }
     state.selectedPlayId = sess.plays.length ? sess.plays[0].play_id : null;
     els.exportStatus.classList.remove("is-error");
     els.exportStatus.textContent = "";
   } else {
-    mediaPlayer.loadSession(sess, { resetTime: false });
+    if (studioActive) {
+      mediaPlayer.loadSession(sess, { resetTime: false });
+    }
     if (!state.selectedPlayId && sess.plays.length) {
       state.selectedPlayId = sess.plays[0].play_id;
     } else if (state.selectedPlayId && !sess.plays.some((p) => p.play_id === state.selectedPlayId)) {
@@ -985,7 +992,9 @@ function applySession(sess, resetVideoSrc) {
   renderKeyframes(activePlay);
   renderMetrics(activePlay);
   syncControlsDisabledState();
-  renderOverlay();
+  if (studioActive) {
+    renderOverlay();
+  }
 
   if (sess.status !== "ready" && sess.status !== "error") {
     schedulePoll(sess.session_id);
@@ -1219,6 +1228,7 @@ function setupEventListeners() {
         setInteractiveMode(false, false);
         return true;
       }
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
       if (ev.target && ["INPUT", "SELECT", "TEXTAREA"].includes(ev.target.tagName)) return false;
       if (["Digit1", "Digit2", "Digit3"].includes(ev.code)) {
         const play = getActivePlay();
@@ -1257,6 +1267,9 @@ function setupEventListeners() {
         window.VBallServeTab.onTabActivated();
       }
     } else {
+      if (window.VBallServeTab && typeof window.VBallServeTab.onTabDeactivated === "function") {
+        window.VBallServeTab.onTabDeactivated();
+      }
       mediaPlayer.mountTo(els.studioPlayerSlot, studioAdapter);
       if (mediaPlayer.hasVideo()) {
         const loadedId = mediaPlayer.getSessionId();
@@ -1282,6 +1295,7 @@ function setupEventListeners() {
     openLoadModalForServeTab: () => openModal("serve"),
     refreshSessionsDropdown,
     mediaPlayer,
+    getActiveTab: () => state.activeTab,
     getStudioSession: () => state.session,
     syncStudioToVideoSession,
   };

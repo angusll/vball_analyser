@@ -59,6 +59,7 @@
     pollTimer: null,
     pendingConfirm: null, // "clear" | "deleteSession" | null
     confirmTimer: null,
+    manualUnlinkedSessionId: null,
   };
 
   const sEls = {
@@ -685,6 +686,7 @@
     sState.summary = payload.summary;
     const sess = sState.session;
     const mp = mediaPlayer();
+    const isServeActive = sharedApi().getActiveTab() === "serve";
 
     // Status pill & progress
     const statusMap = {
@@ -700,25 +702,39 @@
     sEls.progress.value = sess.progress_pct || 0;
     if (sess.status === "error" && sess.error_message) showBanner(sess.error_message, true);
 
-    // Sync shared MediaPlayer with Serve session's linked video (or keep Studio's loaded video)
     if (sess.video_session_id) {
-      const matched = sState.videoSessions.find((v) => v.session_id === sess.video_session_id);
-      const isDifferent = mp.getSessionId() !== sess.video_session_id;
-      mp.loadSession(
-        matched || { session_id: sess.video_session_id, metadata: {} },
-        { resetTime: isDifferent }
-      );
-      sEls.videoSelect.value = sess.video_session_id;
+      sState.manualUnlinkedSessionId = null;
     } else if (manualClear) {
-      mp.clear();
-      sEls.videoSelect.value = "";
-    } else if (mp.hasVideo()) {
-      sEls.videoSelect.value = "";
-    } else {
-      sEls.videoSelect.value = "";
+      sState.manualUnlinkedSessionId = sess.serve_session_id;
     }
 
-    const hasVideo = Boolean(sess.video_session_id || (!manualClear && mp.hasVideo()));
+    const isManuallyUnlinked = !sess.video_session_id && sState.manualUnlinkedSessionId === sess.serve_session_id;
+
+    // Sync shared MediaPlayer only when Serve tab is currently active
+    if (isServeActive) {
+      if (sess.video_session_id) {
+        const matched = sState.videoSessions.find((v) => v.session_id === sess.video_session_id);
+        const isDifferent = mp.getSessionId() !== sess.video_session_id;
+        mp.loadSession(
+          matched || { session_id: sess.video_session_id, metadata: {} },
+          { resetTime: isDifferent }
+        );
+        sEls.videoSelect.value = sess.video_session_id;
+      } else if (isManuallyUnlinked) {
+        if (manualClear) mp.clear();
+        sEls.videoSelect.value = "";
+      } else if (mp.hasVideo()) {
+        const sharedId = mp.getSessionId();
+        const hasOption = sharedId && sState.videoSessions.some((v) => v.session_id === sharedId);
+        sEls.videoSelect.value = hasOption ? sharedId : "";
+      } else {
+        sEls.videoSelect.value = "";
+      }
+    } else {
+      sEls.videoSelect.value = sess.video_session_id || "";
+    }
+
+    const hasVideo = Boolean(sess.video_session_id || (!isManuallyUnlinked && isServeActive && mp.hasVideo()));
     if (sEls.toggleCalOverlayBtn) {
       sEls.toggleCalOverlayBtn.classList.toggle("hidden", !hasVideo);
       sEls.toggleCalOverlayBtn.classList.toggle("active", sState.showCalOverlay);
@@ -749,7 +765,7 @@
     }
 
     renderCourt();
-    mp.requestRender();
+    if (isServeActive) mp.requestRender();
     renderSidebar();
   }
 
@@ -930,6 +946,7 @@
 
   function setupServeListeners() {
     sEls.sessionSelect.addEventListener("change", () => {
+      setCalibrationMode(false);
       sState.selectedServeId = null;
       sState.activeServer = "All";
       loadServeSession(sEls.sessionSelect.value);
@@ -938,6 +955,7 @@
     sEls.newSessionBtn.addEventListener("click", async () => {
       try {
         showBanner("", false);
+        setCalibrationMode(false);
         const label = `Practice ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
         const payload = await sharedApi().apiPostJson("/api/serve-sessions", { name: label });
         sState.selectedServeId = null;
@@ -957,6 +975,7 @@
           return;
         }
         clearPendingConfirm();
+        setCalibrationMode(false);
         try {
           showBanner("", false);
           await sharedApi().apiPostJson(
@@ -975,6 +994,7 @@
 
     sEls.videoSelect.addEventListener("change", async () => {
       if (!sState.session) return;
+      setCalibrationMode(false);
       const vid = sEls.videoSelect.value;
       const body = vid ? { video_session_id: vid } : { clear_video_session: true };
       try {
@@ -1297,9 +1317,13 @@
       const clampedX = Math.max(-1.4, Math.min(10.4, x_m));
       const clampedY = Math.max(-0.5, Math.min(10.8, y_m));
       const serverName = sState.activeServer === "All" ? "Unassigned" : sState.activeServer;
-      const ts = mediaPlayer().hasVideo() ? mediaPlayer().getCurrentTime() : null;
+      const showVideo = !sEls.videoCard.classList.contains("hidden") && mediaPlayer().hasVideo();
+      const ts = showVideo ? mediaPlayer().getCurrentTime() : null;
       try {
         showBanner("", false);
+        if (showVideo && !sState.session.video_session_id) {
+          await ensureLinkedVideoForServe();
+        }
         const payload = await postServe(
           `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves`,
           {
@@ -1318,7 +1342,9 @@
 
     window.addEventListener("resize", () => {
       renderCourt();
-      mediaPlayer().requestRender();
+      if (sharedApi().getActiveTab() === "serve") {
+        mediaPlayer().requestRender();
+      }
     });
   }
 
@@ -1327,21 +1353,32 @@
       sState.initialized = true;
       setupServeListeners();
     }
-    mediaPlayer().mountTo(sEls.playerSlot, serveAdapter);
+    if (sharedApi().getActiveTab() === "serve") {
+      mediaPlayer().mountTo(sEls.playerSlot, serveAdapter);
+    }
     await refreshVideoSessionsDropdown();
     await refreshServeSessionsDropdown();
     renderCourt();
-    mediaPlayer().requestRender();
+    if (sharedApi().getActiveTab() === "serve") {
+      mediaPlayer().requestRender();
+    }
   }
 
   window.VBallServeTab = {
     onTabActivated: () => {
       ensureInit();
     },
+    onTabDeactivated: () => {
+      if (sState.calibrating) {
+        setCalibrationMode(false);
+      }
+    },
     onVideoLoaded: async (videoSession) => {
       await ensureInit();
       await refreshVideoSessionsDropdown();
-      mediaPlayer().loadSession(videoSession, { resetTime: true });
+      if (sharedApi().getActiveTab() === "serve") {
+        mediaPlayer().loadSession(videoSession, { resetTime: true });
+      }
       if (!sState.session) return;
       const payload = await sharedApi().apiPostJson(
         `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,

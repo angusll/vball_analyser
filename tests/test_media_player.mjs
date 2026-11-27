@@ -101,6 +101,7 @@ function makeHarness() {
   video.videoWidth = 1280;
   video.videoHeight = 720;
   video.currentTime = 0;
+  video.defaultPlaybackRate = 1;
   video.playbackRate = 1;
   video.paused = true;
   video.ended = false;
@@ -114,7 +115,10 @@ function makeHarness() {
     video.paused = true;
     video.dispatch("pause");
   };
-  video.load = () => {};
+  video.load = () => {
+    // HTML5 media load algorithm resets playbackRate to defaultPlaybackRate
+    video.playbackRate = video.defaultPlaybackRate || 1;
+  };
 
   const canvas = makeFakeElement("canvas", { id: "overlayCanvas" });
   const timelineCanvas = makeFakeElement("canvas", { id: "timelineCanvas" });
@@ -165,6 +169,7 @@ function makeHarness() {
   const serveSlot = makeFakeElement("div", { id: "servePlayerSlot" });
   studioSlot.appendChild(root);
 
+  let openDialog = null;
   const documentFake = {
     addEventListener(type, fn) {
       if (!docListeners.has(type)) docListeners.set(type, []);
@@ -173,19 +178,28 @@ function makeHarness() {
     dispatch(type, ev) {
       for (const fn of docListeners.get(type) || []) fn(ev);
     },
+    querySelector(sel) {
+      if (sel === "dialog[open]") return openDialog;
+      return null;
+    },
     querySelectorAll(sel) {
       if (sel === ".speed-btn") return [speed025, speed05, speed1, externalFormationBtn];
       return [];
     },
+    setOpenDialog(d) { openDialog = d; },
   };
 
+  const rafQueue = [];
   const windowFake = {
     devicePixelRatio: 1,
     addEventListener(type, fn) {
       if (!winListeners.has(type)) winListeners.set(type, []);
       winListeners.get(type).push(fn);
     },
-    requestAnimationFrame: () => 1,
+    requestAnimationFrame: (cb) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    },
   };
   windowFake.window = windowFake;
 
@@ -225,6 +239,7 @@ function makeHarness() {
     studioSlot,
     serveSlot,
     documentFake,
+    rafQueue,
   };
 }
 
@@ -340,4 +355,88 @@ test("keyboard shortcuts work in both tabs and ignore form inputs", () => {
   assert.equal(h.video.paused, true);
   assert.equal(h.player.getCurrentFrame(), 1);
   assert.ok(customKeys >= 2);
+});
+
+test("playbackRate persists across clear(), loadSession(newSess), and loadedmetadata", () => {
+  const h = makeHarness();
+  h.player.loadSession({ session_id: "sess-1", metadata: { fps: 30, duration_s: 20, width: 1280, height: 720 } });
+  h.player.setPlaybackRate(0.5);
+  assert.equal(h.video.playbackRate, 0.5);
+
+  h.player.clear();
+  h.player.loadSession({ session_id: "sess-2", metadata: { fps: 30, duration_s: 15, width: 1280, height: 720 } }, { resetTime: true });
+  h.video.dispatch("loadedmetadata");
+  assert.equal(h.video.playbackRate, 0.5);
+  assert.equal(h.speed05.classList.contains("active"), true);
+});
+
+test("rapid play/pause/play does not spawn duplicate rAF render loops", () => {
+  const h = makeHarness();
+  h.player.loadSession({ session_id: "sess-1", metadata: { fps: 30, duration_s: 10, width: 1280, height: 720 } });
+  let renderCalls = 0;
+  h.player.mountTo(h.studioSlot, { onRenderOverlay: () => { renderCalls += 1; } });
+
+  h.player.play(); // queues raf #1
+  h.player.pause();
+  h.player.play(); // queues raf #2
+
+  // Drain the first two queued callbacks; stale raf #1 must NOT render or reschedule
+  renderCalls = 0;
+  const firstBatch = h.rafQueue.splice(0, h.rafQueue.length);
+  for (const cb of firstBatch) cb();
+
+  assert.equal(renderCalls, 1);
+  assert.equal(h.rafQueue.length, 1);
+});
+
+test("loadSession with partial metadata resets stale fps from previous video", () => {
+  const h = makeHarness();
+  h.player.loadSession({ session_id: "sess-60", metadata: { fps: 60, duration_s: 10, width: 1920, height: 1080 } });
+  assert.equal(h.player.getFps(), 60);
+
+  h.player.loadSession({ session_id: "sess-partial", metadata: {} }, { resetTime: true });
+  assert.equal(h.player.getFps(), 30);
+});
+
+test("keyboard shortcuts ignore modifier keys, Space repeat, focused buttons, and open dialogs", () => {
+  const h = makeHarness();
+  h.player.loadSession({ session_id: "sess-1", metadata: { fps: 30, duration_s: 10, width: 1280, height: 720 } });
+
+  // Alt+ArrowRight must be ignored
+  let prevented = false;
+  h.documentFake.dispatch("keydown", {
+    code: "ArrowRight",
+    altKey: true,
+    target: { tagName: "BODY" },
+    preventDefault: () => { prevented = true; },
+  });
+  assert.equal(prevented, false);
+  assert.equal(h.player.getCurrentFrame(), 0);
+
+  // Space on focused BUTTON must not hijack button activation
+  h.documentFake.dispatch("keydown", {
+    code: "Space",
+    target: { tagName: "BUTTON" },
+    preventDefault: () => { prevented = true; },
+  });
+  assert.equal(prevented, false);
+  assert.equal(h.video.paused, true);
+
+  // Space autorepeat must not toggle playback
+  h.documentFake.dispatch("keydown", {
+    code: "Space",
+    repeat: true,
+    target: { tagName: "BODY" },
+    preventDefault: () => { prevented = true; },
+  });
+  assert.equal(h.video.paused, true);
+
+  // Open <dialog> blocks transport shortcuts
+  h.documentFake.setOpenDialog({ open: true });
+  h.documentFake.dispatch("keydown", {
+    code: "Space",
+    target: { tagName: "BODY" },
+    preventDefault: () => { prevented = true; },
+  });
+  assert.equal(h.video.paused, true);
 });
