@@ -211,7 +211,9 @@ def _find_serve_landing_balls(
                 and reb_dist <= max(140.0, 1800.0 * reb_dt)
                 and nxt_b.y < end_b.y - 2.0
             )
-        below_tape = end_b.y >= tape_y + 15.0
+        # Chest/overhead serve receptions in the backcourt can project near or slightly above
+        # the net top tape in baseline perspective; receiver bbox matching filters non-receptions.
+        below_tape = end_b.y >= tape_y - 25.0
         at_floor = end_b.y >= net_center_y - 15.0
 
         if (
