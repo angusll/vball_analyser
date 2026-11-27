@@ -1000,6 +1000,6 @@ app = create_app()
 
 
 def main() -> None:
-    """Launch the local Volleyball Baseline Training Analyser studio on 127.0.0.1."""
+    """Launch the Volleyball Baseline Training Analyser studio."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     uvicorn.run(app, host=DEFAULT_CONFIG.bind_host, port=DEFAULT_CONFIG.default_port)
