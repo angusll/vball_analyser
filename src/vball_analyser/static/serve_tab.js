@@ -70,6 +70,7 @@
     pollTimer: null,
     pendingConfirm: null, // "clear" | "deleteSession" | null
     confirmTimer: null,
+    manualUnlinkedSessionId: null,
   };
 
   const sEls = {
@@ -87,14 +88,10 @@
     progress: document.getElementById("serveProgress"),
     banner: document.getElementById("serveMessageBanner"),
     videoCard: document.getElementById("serveVideoCard"),
+    playerSlot: document.getElementById("servePlayerSlot"),
     calBadge: document.getElementById("serveCalBadge"),
     calHint: document.getElementById("serveCalHint"),
     cancelCalBtn: document.getElementById("cancelServeCalBtn"),
-    playPauseBtn: document.getElementById("servePlayPauseBtn"),
-    videoTime: document.getElementById("serveVideoTime"),
-    video: document.getElementById("serveVideo"),
-    videoCanvas: document.getElementById("serveVideoCanvas"),
-    seekSlider: document.getElementById("serveSeekSlider"),
     courtTitle: document.getElementById("serveCourtTitle"),
     formationGroup: document.getElementById("serveFormationGroup"),
     layerToggles: document.getElementById("serveLayerToggles"),
@@ -153,6 +150,10 @@
 
   function sharedApi() {
     return window.VBallShared;
+  }
+
+  function mediaPlayer() {
+    return sharedApi().mediaPlayer;
   }
 
   function withServerQuery(url) {
@@ -348,35 +349,9 @@
     };
   }
 
-  function getServeVideoRect() {
-    const vw = sEls.video.videoWidth || 1056;
-    const vh = sEls.video.videoHeight || 576;
-    const cw = sEls.videoCanvas.clientWidth;
-    const ch = sEls.videoCanvas.clientHeight;
-    if (!cw || !ch) return { ox: 0, oy: 0, dw: cw, dh: ch, scale: 1 };
-    const scale = Math.min(cw / vw, ch / vh);
-    const dw = vw * scale;
-    const dh = vh * scale;
-    return { ox: (cw - dw) / 2, oy: (ch - dh) / 2, dw, dh, scale };
-  }
-
-  function renderVideoOverlay() {
-    const canvas = sEls.videoCanvas;
-    if (!canvas || sEls.videoCard.classList.contains("hidden")) return;
-    const cw = canvas.clientWidth;
-    const ch = canvas.clientHeight;
-    if (!cw || !ch) return;
-    const dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
-      canvas.width = Math.round(cw * dpr);
-      canvas.height = Math.round(ch * dpr);
-    }
-    const ctx = canvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, cw, ch);
-
-    const rect = getServeVideoRect();
-    const toC = (pt) => ({ x: rect.ox + pt.x * rect.scale, y: rect.oy + pt.y * rect.scale });
+  function renderServeOverlay(ctx, mp) {
+    if (sEls.videoCard.classList.contains("hidden")) return;
+    const toC = (pt) => mp.toCanvasPt(pt);
 
     // Draw saved calibration grid + net reference line (when overlay toggle is enabled)
     const cal = sState.session && sState.session.court_calibration;
@@ -450,6 +425,28 @@
         ctx.fillText(String(idx + 1), pt.x, pt.y);
       });
       ctx.restore();
+    }
+  }
+
+  function renderServeTimeline(ctx, _mp, layout) {
+    const visible = getVisibleServes();
+    if (!visible.length) return;
+    const { pad, usableW, trackY, trackH, duration } = layout;
+
+    for (const sv of visible) {
+      if (sv.timestamp_s === null || sv.timestamp_s === undefined) continue;
+      const sx = pad + Math.max(0, Math.min(1, sv.timestamp_s / duration)) * usableW;
+      const isSel = sv.serve_id === sState.selectedServeId;
+      let color = "#38bdf8";
+      if (sv.result === "ace") color = "#facc15";
+      else if (sv.result === "out" || sv.result === "net") color = "#fb7185";
+
+      if (isSel) {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(sx - 2.5, trackY - 7, 5, trackH + 14);
+      }
+      ctx.fillStyle = color;
+      ctx.fillRect(sx - 1.5, trackY - (isSel ? 6 : 4), 3, trackH + (isSel ? 12 : 8));
     }
   }
 
@@ -1151,26 +1148,47 @@
 
   function selectServe(sv) {
     sState.selectedServeId = sv ? sv.serve_id : null;
-    if (sv && sEls.video.src) {
+    const mp = mediaPlayer();
+    const showVideo = !sEls.videoCard.classList.contains("hidden") && mp.hasVideo();
+    if (sv && showVideo) {
       const seekTs =
         sState.mode === "receive" && sv.pass_timestamp_s != null
           ? sv.pass_timestamp_s
           : sv.timestamp_s;
       if (seekTs !== null && seekTs !== undefined) {
-        sEls.video.currentTime = seekTs;
-        sEls.video.pause();
-        sEls.playPauseBtn.textContent = "Play";
+        mp.pause();
+        mp.seekToTime(seekTs);
       }
     }
     renderCourt();
     renderSidebar();
+    mp.requestRender();
   }
 
-  function applyServePayload(payload) {
+  async function ensureLinkedVideoForServe() {
+    const mp = mediaPlayer();
+    if (!sState.session || sState.session.video_session_id || !mp.hasVideo()) {
+      return Boolean(sState.session && sState.session.video_session_id);
+    }
+    const vid = mp.getSessionId();
+    if (!vid) return false;
+    const payload = await postServe(
+      `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+      { video_session_id: vid }
+    );
+    sState.session = payload.session;
+    sState.summary = payload.summary;
+    return true;
+  }
+
+  function applyServePayload(payload, opts = {}) {
+    const manualClear = Boolean(opts.manualClear);
     sState.session = payload.session;
     sState.summary = payload.summary;
     sState.receiveSummary = payload.receive_summary || null;
     const sess = sState.session;
+    const mp = mediaPlayer();
+    const isServeActive = sharedApi().getActiveTab() === "serve";
 
     // Status pill & progress
     const statusMap = {
@@ -1186,8 +1204,54 @@
     sEls.progress.value = sess.progress_pct || 0;
     if (sess.status === "error" && sess.error_message) showBanner(sess.error_message, true);
 
-    // Linked video preview
-    const hasVideo = Boolean(sess.video_session_id);
+    if (sess.video_session_id) {
+      sState.manualUnlinkedSessionId = null;
+    } else if (manualClear) {
+      sState.manualUnlinkedSessionId = sess.serve_session_id;
+    }
+
+    const isManuallyUnlinked = !sess.video_session_id && sState.manualUnlinkedSessionId === sess.serve_session_id;
+
+    // Sync shared MediaPlayer only when Serve tab is currently active
+    if (isServeActive) {
+      if (sess.video_session_id) {
+        const matched = sState.videoSessions.find((v) => v.session_id === sess.video_session_id);
+        const isDifferent = mp.getSessionId() !== sess.video_session_id;
+        mp.loadSession(
+          matched || { session_id: sess.video_session_id, metadata: {} },
+          { resetTime: isDifferent }
+        );
+        if (!matched) {
+          const missingId = sess.video_session_id;
+          fetch(`/api/sessions/${encodeURIComponent(missingId)}`, { credentials: "same-origin" })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((fresh) => {
+              if (!fresh || !fresh.session_id) return;
+              if (!sState.videoSessions.some((v) => v.session_id === fresh.session_id)) {
+                sState.videoSessions.push(fresh);
+              }
+              if (sharedApi().getActiveTab() === "serve" && mp.getSessionId() === fresh.session_id) {
+                mp.loadSession(fresh, { resetTime: false });
+              }
+            })
+            .catch(() => {});
+        }
+        sEls.videoSelect.value = sess.video_session_id;
+      } else if (isManuallyUnlinked) {
+        if (manualClear) mp.clear();
+        sEls.videoSelect.value = "";
+      } else if (mp.hasVideo()) {
+        const sharedId = mp.getSessionId();
+        const hasOption = sharedId && sState.videoSessions.some((v) => v.session_id === sharedId);
+        sEls.videoSelect.value = hasOption ? sharedId : "";
+      } else {
+        sEls.videoSelect.value = "";
+      }
+    } else {
+      sEls.videoSelect.value = sess.video_session_id || "";
+    }
+
+    const hasVideo = Boolean(sess.video_session_id || (!isManuallyUnlinked && isServeActive && mp.hasVideo()));
     if (sEls.toggleCalOverlayBtn) {
       sEls.toggleCalOverlayBtn.classList.toggle("hidden", !hasVideo);
       sEls.toggleCalOverlayBtn.classList.toggle("active", sState.showCalOverlay);
@@ -1200,24 +1264,6 @@
     const calMethod = sess.court_calibration && sess.court_calibration.method === "net" ? "Net Interpolated" : "4-Corner";
     sEls.calBadge.textContent = isCal ? `Calibrated (${calMethod})` : "Uncalibrated";
     sEls.autoDetectBtn.disabled = !hasVideo || !isCal || sess.status === "scanning";
-
-    if (hasVideo) {
-      const targetSrc = `/api/sessions/${encodeURIComponent(sess.video_session_id)}/video`;
-      if (!sEls.video.src.endsWith(targetSrc)) {
-        sEls.video.src = targetSrc;
-      }
-      sEls.videoSelect.value = sess.video_session_id;
-    } else {
-      sEls.video.pause();
-      if (sEls.video.hasAttribute("src")) {
-        sEls.video.removeAttribute("src");
-        sEls.video.load();
-      }
-      sEls.playPauseBtn.textContent = "Play";
-      sEls.videoTime.textContent = "0.00s";
-      sEls.seekSlider.value = "0";
-      sEls.videoSelect.value = "";
-    }
 
     // Sync active formation preset button to session's default passer count
     const passerCount = Array.isArray(sess.default_passers) ? sess.default_passers.length : 0;
@@ -1236,7 +1282,7 @@
     }
 
     renderCourt();
-    renderVideoOverlay();
+    if (isServeActive) mp.requestRender();
     renderSidebar();
   }
 
@@ -1334,8 +1380,81 @@
     sEls.cancelCalBtn.classList.toggle("hidden", !active);
     const labels = sState.calMode === "net" ? NET_CAL_LABELS : CAL_LABELS;
     sEls.calHint.textContent = active ? labels[0] : "";
-    renderVideoOverlay();
+    mediaPlayer().setCanvasInteractive(active);
+    mediaPlayer().requestRender();
   }
+
+  const serveAdapter = {
+    showEmptyState: false,
+    allowFileDrop: false,
+    onRenderOverlay: (ctx, mp) => renderServeOverlay(ctx, mp),
+    onRenderTimeline: (ctx, mp, layout) => renderServeTimeline(ctx, mp, layout),
+    onCanvasMouseMove: (videoPt) => {
+      if (!sState.calibrating) return;
+      sState.calHover = videoPt;
+      mediaPlayer().requestRender();
+    },
+    onCanvasMouseLeave: () => {
+      if (!sState.calibrating || !sState.calHover) return;
+      sState.calHover = null;
+      mediaPlayer().requestRender();
+    },
+    onCanvasClick: async (imgPt) => {
+      if (!sState.calibrating || !sState.session) return;
+      sState.calPoints.push(imgPt);
+
+      if (sState.calMode === "net") {
+        if (sState.calPoints.length < 3) {
+          sEls.calHint.textContent = NET_CAL_LABELS[sState.calPoints.length];
+          mediaPlayer().requestRender();
+          return;
+        }
+        const [left_top, right_top, sideline_point] = sState.calPoints;
+        setCalibrationMode(false);
+        const netHeightEl = document.getElementById("netHeightSelect");
+        const netHeightM = netHeightEl ? parseFloat(netHeightEl.value) || 2.43 : 2.43;
+        try {
+          showBanner("", false);
+          await ensureLinkedVideoForServe();
+          const payload = await postServe(
+            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/calibration/from-net`,
+            { left_top, right_top, sideline_point, net_height_m: netHeightM }
+          );
+          applyServePayload(payload);
+        } catch (err) {
+          showBanner(err.message || "Invalid net calibration.", true);
+        }
+        return;
+      }
+
+      if (sState.calPoints.length < 4) {
+        sEls.calHint.textContent = CAL_LABELS[sState.calPoints.length];
+        mediaPlayer().requestRender();
+        return;
+      }
+      const [front_left, front_right, attack_right, attack_left] = sState.calPoints;
+      setCalibrationMode(false);
+      try {
+        showBanner("", false);
+        await ensureLinkedVideoForServe();
+        const payload = await postServe(
+          `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/calibration`,
+          { front_left, front_right, attack_right, attack_left }
+        );
+        applyServePayload(payload);
+      } catch (err) {
+        showBanner(err.message || "Invalid 4-corner calibration.", true);
+      }
+    },
+    onKeyDown: (ev) => {
+      if (ev.code === "Escape" && sState.calibrating) {
+        ev.preventDefault();
+        setCalibrationMode(false);
+        return true;
+      }
+      return false;
+    },
+  };
 
   function canvasPointerPos(canvas, ev) {
     const rect = canvas.getBoundingClientRect();
@@ -1351,6 +1470,7 @@
     });
 
     sEls.sessionSelect.addEventListener("change", () => {
+      setCalibrationMode(false);
       sState.selectedServeId = null;
       sState.activeServer = "All";
       loadServeSession(sEls.sessionSelect.value);
@@ -1359,6 +1479,7 @@
     sEls.newSessionBtn.addEventListener("click", async () => {
       try {
         showBanner("", false);
+        setCalibrationMode(false);
         const label = `Practice ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
         const payload = await sharedApi().apiPostJson("/api/serve-sessions", { name: label });
         sState.selectedServeId = null;
@@ -1378,6 +1499,7 @@
           return;
         }
         clearPendingConfirm();
+        setCalibrationMode(false);
         try {
           showBanner("", false);
           await sharedApi().apiPostJson(
@@ -1396,6 +1518,7 @@
 
     sEls.videoSelect.addEventListener("change", async () => {
       if (!sState.session) return;
+      setCalibrationMode(false);
       const vid = sEls.videoSelect.value;
       const body = vid ? { video_session_id: vid } : { clear_video_session: true };
       try {
@@ -1404,7 +1527,7 @@
           `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
           body
         );
-        applyServePayload(payload);
+        applyServePayload(payload, { manualClear: !vid });
       } catch (err) {
         showBanner(err.message || "Unable to update linked video.", true);
         await refreshCurrentSession();
@@ -1417,7 +1540,7 @@
 
     if (sEls.calibrateNetBtn) {
       sEls.calibrateNetBtn.addEventListener("click", () => {
-        if (!sState.session || !sState.session.video_session_id) return;
+        if (!sState.session || (!sState.session.video_session_id && !mediaPlayer().hasVideo())) return;
         sState.showCalOverlay = true;
         if (sEls.toggleCalOverlayBtn) {
           sEls.toggleCalOverlayBtn.classList.add("active");
@@ -1428,7 +1551,7 @@
     }
 
     sEls.calibrateBtn.addEventListener("click", () => {
-      if (!sState.session || !sState.session.video_session_id) return;
+      if (!sState.session || (!sState.session.video_session_id && !mediaPlayer().hasVideo())) return;
       sState.showCalOverlay = true;
       if (sEls.toggleCalOverlayBtn) {
         sEls.toggleCalOverlayBtn.classList.add("active");
@@ -1442,73 +1565,17 @@
         sState.showCalOverlay = !sState.showCalOverlay;
         sEls.toggleCalOverlayBtn.classList.toggle("active", sState.showCalOverlay);
         sEls.toggleCalOverlayBtn.setAttribute("aria-pressed", String(sState.showCalOverlay));
-        renderVideoOverlay();
+        mediaPlayer().requestRender();
       });
     }
 
     sEls.cancelCalBtn.addEventListener("click", () => setCalibrationMode(false));
 
-    sEls.videoCanvas.addEventListener("mousemove", (ev) => {
-      if (!sState.calibrating) return;
-      const pt = canvasPointerPos(sEls.videoCanvas, ev);
-      const r = getServeVideoRect();
-      sState.calHover = { x: (pt.x - r.ox) / r.scale, y: (pt.y - r.oy) / r.scale };
-      renderVideoOverlay();
-    });
-
-    sEls.videoCanvas.addEventListener("click", async (ev) => {
-      if (!sState.calibrating || !sState.session) return;
-      const pt = canvasPointerPos(sEls.videoCanvas, ev);
-      const r = getServeVideoRect();
-      const imgPt = { x: (pt.x - r.ox) / r.scale, y: (pt.y - r.oy) / r.scale };
-      sState.calPoints.push(imgPt);
-
-      if (sState.calMode === "net") {
-        if (sState.calPoints.length < 3) {
-          sEls.calHint.textContent = NET_CAL_LABELS[sState.calPoints.length];
-          renderVideoOverlay();
-          return;
-        }
-        const [left_top, right_top, sideline_point] = sState.calPoints;
-        setCalibrationMode(false);
-        const netHeightEl = document.getElementById("netHeightSelect");
-        const netHeightM = netHeightEl ? parseFloat(netHeightEl.value) || 2.43 : 2.43;
-        try {
-          showBanner("", false);
-          const payload = await postServe(
-            `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/calibration/from-net`,
-            { left_top, right_top, sideline_point, net_height_m: netHeightM }
-          );
-          applyServePayload(payload);
-        } catch (err) {
-          showBanner(err.message || "Invalid net calibration.", true);
-        }
-        return;
-      }
-
-      if (sState.calPoints.length < 4) {
-        sEls.calHint.textContent = CAL_LABELS[sState.calPoints.length];
-        renderVideoOverlay();
-        return;
-      }
-      const [front_left, front_right, attack_right, attack_left] = sState.calPoints;
-      setCalibrationMode(false);
-      try {
-        showBanner("", false);
-        const payload = await postServe(
-          `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/calibration`,
-          { front_left, front_right, attack_right, attack_left }
-        );
-        applyServePayload(payload);
-      } catch (err) {
-        showBanner(err.message || "Invalid 4-corner calibration.", true);
-      }
-    });
-
     sEls.autoDetectBtn.addEventListener("click", async () => {
       if (!sState.session) return;
       try {
         showBanner("", false);
+        await ensureLinkedVideoForServe();
         const srv = sState.activeServer === "All" ? "Unassigned" : sState.activeServer;
         const payload = await postServe(
           `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/auto-detect`,
@@ -1518,29 +1585,6 @@
       } catch (err) {
         showBanner(err.message || "Unable to start serve auto-detection.", true);
       }
-    });
-
-    sEls.playPauseBtn.addEventListener("click", () => {
-      if (!sEls.video.src) return;
-      if (sEls.video.paused) {
-        sEls.video.play();
-        sEls.playPauseBtn.textContent = "Pause";
-      } else {
-        sEls.video.pause();
-        sEls.playPauseBtn.textContent = "Play";
-      }
-    });
-
-    sEls.video.addEventListener("loadedmetadata", () => {
-      sEls.seekSlider.max = String(sEls.video.duration || 1);
-      renderVideoOverlay();
-    });
-    sEls.video.addEventListener("timeupdate", () => {
-      sEls.seekSlider.value = String(sEls.video.currentTime || 0);
-      sEls.videoTime.textContent = `${(sEls.video.currentTime || 0).toFixed(2)}s`;
-    });
-    sEls.seekSlider.addEventListener("input", () => {
-      sEls.video.currentTime = parseFloat(sEls.seekSlider.value) || 0;
     });
 
     // Formation presets
@@ -1965,10 +2009,15 @@
       const clampedX = Math.max(-1.4, Math.min(10.4, x_m));
       const clampedY = Math.max(-0.5, Math.min(10.8, y_m));
       const serverName = sState.activeServer === "All" ? "Unassigned" : sState.activeServer;
-      const ts = sState.session.video_session_id && sEls.video.src ? sEls.video.currentTime : null;
+      const showVideo = !sEls.videoCard.classList.contains("hidden") && mediaPlayer().hasVideo();
+      const ts = showVideo ? mediaPlayer().getCurrentTime() : null;
 
       if (sState.mode === "receive") {
         const sel = getSelectedServe();
+        if (sel && sel.result !== "in") {
+          showBanner(`Cannot set pass target on a ${sel.result.toUpperCase()} serve — change result to In first.`, true);
+          return;
+        }
         try {
           showBanner("", false);
           if (sel) {
@@ -1978,6 +2027,9 @@
             );
             applyServePayload(payload);
           } else {
+            if (showVideo && !sState.session.video_session_id) {
+              await ensureLinkedVideoForServe();
+            }
             const payload = await postServe(
               `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves`,
               {
@@ -1997,9 +2049,11 @@
         }
         return;
       }
-
       try {
         showBanner("", false);
+        if (showVideo && !sState.session.video_session_id) {
+          await ensureLinkedVideoForServe();
+        }
         const payload = await postServe(
           `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves`,
           {
@@ -2018,7 +2072,9 @@
 
     window.addEventListener("resize", () => {
       renderCourt();
-      renderVideoOverlay();
+      if (sharedApi().getActiveTab() === "serve") {
+        mediaPlayer().requestRender();
+      }
     });
   }
 
@@ -2027,19 +2083,31 @@
       sState.initialized = true;
       setupServeListeners();
     }
+    if (sharedApi().getActiveTab() === "serve") {
+      mediaPlayer().mountTo(sEls.playerSlot, serveAdapter);
+    }
     await refreshVideoSessionsDropdown();
     await refreshServeSessionsDropdown();
     renderCourt();
-    renderVideoOverlay();
+    if (sharedApi().getActiveTab() === "serve") {
+      mediaPlayer().requestRender();
+    }
   }
 
   window.VBallServeTab = {
     onTabActivated: () => {
       ensureInit();
     },
+    onTabDeactivated: () => {
+      if (sState.calibrating) {
+        setCalibrationMode(false);
+      }
+    },
     onVideoLoaded: async (videoSession) => {
       await ensureInit();
-      await refreshVideoSessionsDropdown();
+      if (sharedApi().getActiveTab() === "serve") {
+        mediaPlayer().loadSession(videoSession, { resetTime: true });
+      }
       if (!sState.session) return;
       const payload = await sharedApi().apiPostJson(
         `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,

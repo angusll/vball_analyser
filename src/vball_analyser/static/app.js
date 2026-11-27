@@ -57,20 +57,10 @@ const els = {
   modeHint: document.getElementById("modeHint"),
   cancelModeBtn: document.getElementById("cancelModeBtn"),
   shortcutLegend: document.getElementById("shortcutLegend"),
+  studioPlayerSlot: document.getElementById("studioPlayerSlot"),
+  mediaPlayerRoot: document.getElementById("mediaPlayerRoot"),
   videoStage: document.getElementById("videoStage"),
   stageDropOverlay: document.getElementById("stageDropOverlay"),
-  video: document.getElementById("playerVideo"),
-  canvas: document.getElementById("overlayCanvas"),
-  emptyState: document.getElementById("emptyState"),
-  stepBack5Btn: document.getElementById("stepBack5Btn"),
-  stepBack1Btn: document.getElementById("stepBack1Btn"),
-  playPauseBtn: document.getElementById("playPauseBtn"),
-  playPauseLabel: document.getElementById("playPauseLabel"),
-  stepFwd1Btn: document.getElementById("stepFwd1Btn"),
-  stepFwd5Btn: document.getElementById("stepFwd5Btn"),
-  timelineCanvas: document.getElementById("timelineCanvas"),
-  seekSlider: document.getElementById("seekSlider"),
-  timeReadout: document.getElementById("timeReadout"),
   keyframesStrip: document.getElementById("keyframesStrip"),
   playsList: document.getElementById("playsList"),
   playsCountBadge: document.getElementById("playsCountBadge"),
@@ -81,6 +71,8 @@ const els = {
   exportMp4Btn: document.getElementById("exportMp4Btn"),
   exportStatus: document.getElementById("exportStatus"),
 };
+
+const mediaPlayer = new window.VBallMediaPlayer.MediaPlayer(els.mediaPlayerRoot);
 
 async function fetchCsrf() {
   const res = await fetch("/api/csrf", { credentials: "same-origin" });
@@ -137,31 +129,11 @@ function formatTime(seconds) {
 }
 
 function getVideoDisplayRect() {
-  const vw = els.video.videoWidth || (state.session ? state.session.metadata.width : 1280);
-  const vh = els.video.videoHeight || (state.session ? state.session.metadata.height : 720);
-  const cw = els.canvas.clientWidth;
-  const ch = els.canvas.clientHeight;
-  if (!vw || !vh || !cw || !ch) return { ox: 0, oy: 0, dw: cw, dh: ch, scale: 1 };
-  const scale = Math.min(cw / vw, ch / vh);
-  const dw = vw * scale;
-  const dh = vh * scale;
-  return { ox: (cw - dw) / 2, oy: (ch - dh) / 2, dw, dh, scale };
+  return mediaPlayer.getVideoDisplayRect();
 }
 
 function toCanvasPt(pt) {
-  const r = getVideoDisplayRect();
-  return { x: r.ox + pt.x * r.scale, y: r.oy + pt.y * r.scale };
-}
-
-function toVideoPt(clientX, clientY) {
-  const rect = els.canvas.getBoundingClientRect();
-  const cx = clientX - rect.left;
-  const cy = clientY - rect.top;
-  const r = getVideoDisplayRect();
-  return {
-    x: Math.max(0, (cx - r.ox) / r.scale),
-    y: Math.max(0, (cy - r.oy) / r.scale),
-  };
+  return mediaPlayer.toCanvasPt(pt);
 }
 
 function tapeYAt(cal, x) {
@@ -172,8 +144,7 @@ function tapeYAt(cal, x) {
 }
 
 function currentFrameIdx() {
-  const fps = state.session ? state.session.metadata.fps : 30;
-  return Math.max(0, Math.round(els.video.currentTime * fps));
+  return mediaPlayer.getCurrentFrame();
 }
 
 function syncControlsDisabledState() {
@@ -185,12 +156,6 @@ function syncControlsDisabledState() {
   els.netHeightSelect.disabled = !hasSession;
   els.reassignHitterBtn.disabled = !hasPlay;
   els.rerunDetectionBtn.disabled = !hasSession || isBusy;
-  els.stepBack5Btn.disabled = !hasSession;
-  els.stepBack1Btn.disabled = !hasSession;
-  els.playPauseBtn.disabled = !hasSession;
-  els.stepFwd1Btn.disabled = !hasSession;
-  els.stepFwd5Btn.disabled = !hasSession;
-  els.seekSlider.disabled = !hasSession;
   els.addPlayBtn.disabled = !hasSession;
   els.exportMp4Btn.disabled = !hasPlay;
 }
@@ -344,7 +309,7 @@ function drawTopLeftMechanicsHud(ctx, play) {
   const rows = getPlayMechanicsRows(play);
   if (!rows.length) return;
   const r = getVideoDisplayRect();
-  const vw = els.video.videoWidth || (state.session ? state.session.metadata.width : 1280);
+  const vw = mediaPlayer.video.videoWidth || (state.session ? state.session.metadata.width : 1280);
   const padX = 12;
   const padY = 10;
   const lineH = 18;
@@ -357,7 +322,7 @@ function drawTopLeftMechanicsHud(ctx, play) {
     maxLabelW = Math.max(maxLabelW, ctx.measureText(row.label).width);
     maxValW = Math.max(maxValW, ctx.measureText(row.value).width);
   }
-  const maxAvailW = Math.max(180, els.canvas.clientWidth - 20);
+  const maxAvailW = Math.max(180, mediaPlayer.canvas.clientWidth - 20);
   const boxW = Math.min(maxAvailW, Math.max(244, Math.ceil(maxLabelW + maxValW + padX * 2 + 30)));
   const boxH = padY * 2 + headerH + rows.length * lineH;
 
@@ -369,7 +334,7 @@ function drawTopLeftMechanicsHud(ctx, play) {
     ? contactX < vw * 0.5
     : /left|zone\s*4/i.test(play.attack_zone || "");
   const leftEdge = Math.max(10, Math.round(r.ox) + 12);
-  const rightEdge = Math.min(els.canvas.clientWidth - boxW - 10, Math.round(r.ox + r.dw) - boxW - 12);
+  const rightEdge = Math.min(mediaPlayer.canvas.clientWidth - boxW - 10, Math.round(r.ox + r.dw) - boxW - 12);
   const x = attackOnLeft ? Math.max(10, rightEdge) : leftEdge;
   const y = Math.max(10, Math.round(r.oy) + 12);
 
@@ -426,8 +391,8 @@ function drawBadge(ctx, text, x, y, borderCol) {
   const metrics = ctx.measureText(text);
   const w = metrics.width + padX * 2;
   const h = 22;
-  const bx = Math.max(6, Math.min(els.canvas.clientWidth - w - 6, x));
-  const by = Math.max(24, Math.min(els.canvas.clientHeight - 6, y));
+  const bx = Math.max(6, Math.min(mediaPlayer.canvas.clientWidth - w - 6, x));
+  const by = Math.max(24, Math.min(mediaPlayer.canvas.clientHeight - 6, y));
   ctx.fillStyle = "rgba(14, 16, 20, 0.9)";
   ctx.strokeStyle = borderCol;
   ctx.lineWidth = 1.25;
@@ -474,34 +439,10 @@ function syncActiveKeyframeHighlight(frameIdx) {
   }
 }
 
-function renderTimeline() {
-  const canvas = els.timelineCanvas;
-  if (!canvas) return;
-  const dpr = window.devicePixelRatio || 1;
-  const cw = canvas.clientWidth;
-  const ch = canvas.clientHeight;
-  if (!cw || !ch) return;
-  if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
-    canvas.width = Math.round(cw * dpr);
-    canvas.height = Math.round(ch * dpr);
-  }
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cw, ch);
-
-  const pad = 7;
-  const usableW = Math.max(1, cw - pad * 2);
-  const trackY = Math.round(ch / 2) - 3;
-  const trackH = 6;
-
-  // Base track rail
-  ctx.fillStyle = "rgba(148, 163, 184, 0.16)";
-  ctx.beginPath();
-  ctx.roundRect(pad, trackY, usableW, trackH, 3);
-  ctx.fill();
-
+function renderStudioTimeline(ctx, player, layout) {
   if (!state.session) return;
-  const duration = Math.max(0.001, state.session.metadata.duration_s || 1);
+  if (player.hasVideo() && player.getSessionId() !== state.session.session_id) return;
+  const { pad, usableW, trackY, trackH, duration } = layout;
   const activePlay = getActivePlay();
 
   // Play segments
@@ -513,15 +454,6 @@ function renderTimeline() {
     ctx.fillStyle = isSel ? "rgba(56, 189, 248, 0.42)" : "rgba(56, 189, 248, 0.18)";
     ctx.beginPath();
     ctx.roundRect(x0, trackY - (isSel ? 2 : 0), w, trackH + (isSel ? 4 : 0), 3);
-    ctx.fill();
-  }
-
-  // Played fill
-  const progressRatio = Math.max(0, Math.min(1, els.video.currentTime / duration));
-  if (progressRatio > 0) {
-    ctx.fillStyle = "rgba(56, 189, 248, 0.78)";
-    ctx.beginPath();
-    ctx.roundRect(pad, trackY, Math.max(3, progressRatio * usableW), trackH, 3);
     ctx.fill();
   }
 
@@ -541,24 +473,13 @@ function renderTimeline() {
 }
 
 function renderOverlay() {
-  const dpr = window.devicePixelRatio || 1;
-  const cw = els.canvas.clientWidth;
-  const ch = els.canvas.clientHeight;
-  if (els.canvas.width !== Math.round(cw * dpr) || els.canvas.height !== Math.round(ch * dpr)) {
-    els.canvas.width = Math.round(cw * dpr);
-    els.canvas.height = Math.round(ch * dpr);
-  }
-  const ctx = els.canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cw, ch);
+  mediaPlayer.requestRender();
+}
 
-  renderTimeline();
-
+function renderStudioOverlay(ctx, player, frameIdx) {
   if (!state.session) return;
+  if (player.hasVideo() && player.getSessionId() !== state.session.session_id) return;
   const cal = state.session.calibration;
-  const frameIdx = currentFrameIdx();
-  els.timeReadout.textContent = `${els.video.currentTime.toFixed(2)}s · f${frameIdx}`;
-  syncActiveKeyframeHighlight(frameIdx);
 
   // Net top tape reference
   if (state.overlays.netTape && cal) {
@@ -810,11 +731,7 @@ function renderOverlay() {
 
 function jumpToFrame(frameIdx) {
   if (!state.session) return;
-  const fps = state.session.metadata.fps || 30;
-  els.video.pause();
-  els.video.currentTime = Math.max(0, Math.min(state.session.metadata.duration_s, frameIdx / fps));
-  updatePlayPauseLabel();
-  renderOverlay();
+  mediaPlayer.jumpToFrame(frameIdx);
 }
 
 function renderKeyframes(play) {
@@ -1106,17 +1023,23 @@ function applySession(sess, resetVideoSrc) {
   updateCalScaleBadge();
   els.netHeightSelect.value = String(sess.calibration.net_height_m || 2.43);
 
+  const studioActive = state.activeTab === "studio";
   if (resetVideoSrc || prevId !== sess.session_id) {
-    els.emptyState.classList.add("hidden");
-    els.video.src = `/api/sessions/${encodeURIComponent(sess.session_id)}/video`;
-    els.seekSlider.max = String(Math.max(1, sess.metadata.duration_s));
+    if (studioActive) {
+      mediaPlayer.loadSession(sess, { resetTime: Boolean(resetVideoSrc && prevId !== sess.session_id) });
+    }
     state.selectedPlayId = sess.plays.length ? sess.plays[0].play_id : null;
     els.exportStatus.classList.remove("is-error");
     els.exportStatus.textContent = "";
-  } else if (!state.selectedPlayId && sess.plays.length) {
-    state.selectedPlayId = sess.plays[0].play_id;
-  } else if (state.selectedPlayId && !sess.plays.some((p) => p.play_id === state.selectedPlayId)) {
-    state.selectedPlayId = sess.plays.length ? sess.plays[0].play_id : null;
+  } else {
+    if (studioActive) {
+      mediaPlayer.loadSession(sess, { resetTime: false });
+    }
+    if (!state.selectedPlayId && sess.plays.length) {
+      state.selectedPlayId = sess.plays[0].play_id;
+    } else if (state.selectedPlayId && !sess.plays.some((p) => p.play_id === state.selectedPlayId)) {
+      state.selectedPlayId = sess.plays.length ? sess.plays[0].play_id : null;
+    }
   }
 
   const activePlay = getActivePlay();
@@ -1124,7 +1047,9 @@ function applySession(sess, resetVideoSrc) {
   renderKeyframes(activePlay);
   renderMetrics(activePlay);
   syncControlsDisabledState();
-  renderOverlay();
+  if (studioActive) {
+    renderOverlay();
+  }
 
   if (sess.status !== "ready" && sess.status !== "error") {
     schedulePoll(sess.session_id);
@@ -1168,21 +1093,6 @@ async function refreshSessionsDropdown() {
   }
 }
 
-function updatePlayPauseLabel() {
-  const playing = !els.video.paused && !els.video.ended;
-  els.playPauseBtn.classList.toggle("is-playing", playing);
-  els.playPauseLabel.textContent = playing ? "Pause" : "Play";
-}
-
-function stepFrames(delta) {
-  if (!state.session) return;
-  const fps = state.session.metadata.fps || 30;
-  els.video.pause();
-  els.video.currentTime = Math.max(0, Math.min(state.session.metadata.duration_s, els.video.currentTime + delta / fps));
-  updatePlayPauseLabel();
-  renderOverlay();
-}
-
 function setInteractiveMode(calNet, reassign) {
   state.calibratingNet = calNet;
   state.calFirstPoint = null;
@@ -1192,7 +1102,7 @@ function setInteractiveMode(calNet, reassign) {
 
   els.calibrateNetBtn.classList.toggle("active-mode", calNet);
   els.reassignHitterBtn.classList.toggle("active-mode", reassign);
-  els.canvas.classList.toggle("interactive", calNet || reassign);
+  mediaPlayer.setCanvasInteractive(calNet || reassign);
 
   const inMode = calNet || reassign;
   els.modeHint.classList.toggle("hidden", !inMode);
@@ -1296,6 +1206,98 @@ function setupEventListeners() {
     state.loadModalMode = "studio";
   });
 
+  async function syncStudioToVideoSession(sessionId) {
+    if (!sessionId) return;
+    if (state.session && state.session.session_id === sessionId) {
+      mediaPlayer.loadSession(state.session, { resetTime: false });
+      return;
+    }
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { credentials: "same-origin" });
+    if (res.ok) {
+      applySession(await res.json(), false);
+      refreshSessionsDropdown();
+    }
+  }
+
+  const studioAdapter = {
+    showEmptyState: true,
+    allowFileDrop: true,
+    onRenderOverlay: renderStudioOverlay,
+    onRenderTimeline: renderStudioTimeline,
+    onTimeUpdate: (_timeS, frameIdx) => {
+      syncActiveKeyframeHighlight(frameIdx);
+    },
+    onCanvasMouseMove: (pt) => {
+      if (!state.session || (!state.calibratingNet && !state.reassigningHitter)) return;
+      state.calHoverPt = pt;
+      renderOverlay();
+    },
+    onCanvasMouseLeave: () => {
+      if (!state.calHoverPt && state.hoverTrackId === null) return;
+      state.calHoverPt = null;
+      state.hoverTrackId = null;
+      renderOverlay();
+    },
+    onCanvasClick: async (pt) => {
+      if (!state.session) return;
+
+      if (state.calibratingNet) {
+        if (!state.calFirstPoint) {
+          state.calFirstPoint = pt;
+          els.modeHint.textContent = "Step 2/2: Now click the RIGHT antenna top-tape corner.";
+          renderOverlay();
+        } else {
+          const leftPt = pt.x >= state.calFirstPoint.x ? state.calFirstPoint : pt;
+          const rightPt = pt.x >= state.calFirstPoint.x ? pt : state.calFirstPoint;
+          const updated = await apiPostJson(
+            `/api/sessions/${encodeURIComponent(state.session.session_id)}/calibration`,
+            {
+              left_point: leftPt,
+              right_point: rightPt,
+              net_height_m: parseFloat(els.netHeightSelect.value),
+            }
+          );
+          setInteractiveMode(false, false);
+          applySession(updated, false);
+        }
+        return;
+      }
+
+      if (state.reassigningHitter) {
+        const play = getActivePlay();
+        if (!play) return;
+        const bestId = findNearestAttackingTrackId(play, pt, currentFrameIdx());
+        if (bestId !== null) {
+          const updated = await apiPostJson(
+            `/api/sessions/${encodeURIComponent(state.session.session_id)}/plays/${encodeURIComponent(play.play_id)}/hitter`,
+            { track_id: bestId }
+          );
+          setInteractiveMode(false, false);
+          applySession(updated, false);
+        }
+      }
+    },
+    onKeyDown: (ev, player) => {
+      if (ev.code === "Escape" && (state.calibratingNet || state.reassigningHitter)) {
+        ev.preventDefault();
+        setInteractiveMode(false, false);
+        return true;
+      }
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
+      if (ev.target && (["INPUT", "SELECT", "TEXTAREA"].includes(ev.target.tagName) || ev.target.isContentEditable)) return false;
+      if (["Digit1", "Digit2", "Digit3"].includes(ev.code)) {
+        const play = getActivePlay();
+        if (!play) return false;
+        const idx = parseInt(ev.code.replace("Digit", ""), 10) - 1;
+        if (play.keyframes[idx]) {
+          player.jumpToFrame(play.keyframes[idx].frame_idx);
+          return true;
+        }
+      }
+      return false;
+    },
+  };
+
   function switchTab(tabName) {
     state.activeTab = tabName;
     const isServe = tabName === "serve";
@@ -1312,13 +1314,31 @@ function setupEventListeners() {
       btn.setAttribute("aria-selected", active ? "true" : "false");
     });
     if (isServe) {
+      if (state.calibratingNet || state.reassigningHitter) {
+        setInteractiveMode(false, false);
+      }
+      mediaPlayer.pause();
       if (window.VBallServeTab && typeof window.VBallServeTab.onTabActivated === "function") {
         window.VBallServeTab.onTabActivated();
       }
     } else {
+      if (window.VBallServeTab && typeof window.VBallServeTab.onTabDeactivated === "function") {
+        window.VBallServeTab.onTabDeactivated();
+      }
+      mediaPlayer.mountTo(els.studioPlayerSlot, studioAdapter);
+      if (mediaPlayer.hasVideo()) {
+        const loadedId = mediaPlayer.getSessionId();
+        if (loadedId && (!state.session || state.session.session_id !== loadedId)) {
+          syncStudioToVideoSession(loadedId);
+        }
+      } else if (state.session) {
+        mediaPlayer.loadSession(state.session, { resetTime: false });
+      }
       renderOverlay();
     }
   }
+
+  mediaPlayer.mountTo(els.studioPlayerSlot, studioAdapter);
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => switchTab(btn.getAttribute("data-tab") || "studio"));
@@ -1329,6 +1349,10 @@ function setupEventListeners() {
     fetchCsrf,
     openLoadModalForServeTab: () => openModal("serve"),
     refreshSessionsDropdown,
+    mediaPlayer,
+    getActiveTab: () => state.activeTab,
+    getStudioSession: () => state.session,
+    syncStudioToVideoSession,
   };
   els.loadDialog.addEventListener("click", (ev) => {
     if (ev.target === els.loadDialog) els.loadDialog.close();
@@ -1356,6 +1380,7 @@ function setupEventListeners() {
   });
 
   els.videoStage.addEventListener("dragover", (ev) => {
+    if (state.activeTab !== "studio") return;
     ev.preventDefault();
     els.videoStage.classList.add("drag-active");
     els.stageDropOverlay.classList.remove("hidden");
@@ -1367,6 +1392,7 @@ function setupEventListeners() {
     }
   });
   els.videoStage.addEventListener("drop", (ev) => {
+    if (state.activeTab !== "studio") return;
     ev.preventDefault();
     els.videoStage.classList.remove("drag-active");
     els.stageDropOverlay.classList.add("hidden");
@@ -1480,97 +1506,13 @@ function setupEventListeners() {
     applySession(updated, false);
   });
 
-  els.canvas.addEventListener("mousemove", (ev) => {
-    if (!state.session || (!state.calibratingNet && !state.reassigningHitter)) return;
-    state.calHoverPt = toVideoPt(ev.clientX, ev.clientY);
-    renderOverlay();
-  });
-
-  els.canvas.addEventListener("mouseleave", () => {
-    if (!state.calHoverPt && state.hoverTrackId === null) return;
-    state.calHoverPt = null;
-    state.hoverTrackId = null;
-    renderOverlay();
-  });
-
-  els.canvas.addEventListener("click", async (ev) => {
-    if (!state.session) return;
-    const pt = toVideoPt(ev.clientX, ev.clientY);
-
-    if (state.calibratingNet) {
-      if (!state.calFirstPoint) {
-        state.calFirstPoint = pt;
-        els.modeHint.textContent = "Step 2/2: Now click the RIGHT antenna top-tape corner.";
-        renderOverlay();
-      } else {
-        const leftPt = pt.x >= state.calFirstPoint.x ? state.calFirstPoint : pt;
-        const rightPt = pt.x >= state.calFirstPoint.x ? pt : state.calFirstPoint;
-        const updated = await apiPostJson(
-          `/api/sessions/${encodeURIComponent(state.session.session_id)}/calibration`,
-          {
-            left_point: leftPt,
-            right_point: rightPt,
-            net_height_m: parseFloat(els.netHeightSelect.value),
-          }
-        );
-        setInteractiveMode(false, false);
-        applySession(updated, false);
-      }
-      return;
-    }
-
-    if (state.reassigningHitter) {
-      const play = getActivePlay();
-      if (!play) return;
-      const bestId = findNearestAttackingTrackId(play, pt, currentFrameIdx());
-      if (bestId !== null) {
-        const updated = await apiPostJson(
-          `/api/sessions/${encodeURIComponent(state.session.session_id)}/plays/${encodeURIComponent(play.play_id)}/hitter`,
-          { track_id: bestId }
-        );
-        setInteractiveMode(false, false);
-        applySession(updated, false);
-      }
-    }
-  });
-
-  els.playPauseBtn.addEventListener("click", () => {
-    if (!state.session) return;
-    if (els.video.paused) els.video.play();
-    else els.video.pause();
-    updatePlayPauseLabel();
-  });
-  els.stepBack5Btn.addEventListener("click", () => stepFrames(-5));
-  els.stepBack1Btn.addEventListener("click", () => stepFrames(-1));
-  els.stepFwd1Btn.addEventListener("click", () => stepFrames(1));
-  els.stepFwd5Btn.addEventListener("click", () => stepFrames(5));
-
-  els.seekSlider.addEventListener("input", () => {
-    if (!state.session) return;
-    els.video.currentTime = parseFloat(els.seekSlider.value);
-    renderOverlay();
-  });
-
-  document.querySelectorAll(".speed-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const spd = parseFloat(btn.getAttribute("data-speed"));
-      els.video.playbackRate = spd;
-      document.querySelectorAll(".speed-btn").forEach((b) => {
-        b.classList.remove("active");
-        b.setAttribute("aria-pressed", "false");
-      });
-      btn.classList.add("active");
-      btn.setAttribute("aria-pressed", "true");
-    });
-  });
-
   els.addPlayBtn.addEventListener("click", async () => {
     if (!state.session) return;
     els.addPlayBtn.disabled = true;
     try {
       const updated = await apiPostJson(
         `/api/sessions/${encodeURIComponent(state.session.session_id)}/plays/add`,
-        { center_time_s: els.video.currentTime }
+        { center_time_s: mediaPlayer.getCurrentTime() }
       );
       applySession(updated, false);
     } catch (err) {
@@ -1607,54 +1549,6 @@ function setupEventListeners() {
       els.exportStatus.textContent = err.message;
     } finally {
       syncControlsDisabledState();
-    }
-  });
-
-  els.video.addEventListener("timeupdate", () => {
-    els.seekSlider.value = String(els.video.currentTime);
-    renderOverlay();
-  });
-  els.video.addEventListener("seeked", renderOverlay);
-  els.video.addEventListener("loadedmetadata", renderOverlay);
-  els.video.addEventListener("play", () => {
-    updatePlayPauseLabel();
-    const tick = () => {
-      renderOverlay();
-      if (!els.video.paused && !els.video.ended) {
-        if (typeof els.video.requestVideoFrameCallback === "function") {
-          els.video.requestVideoFrameCallback(tick);
-        } else {
-          requestAnimationFrame(tick);
-        }
-      }
-    };
-    tick();
-  });
-  els.video.addEventListener("pause", updatePlayPauseLabel);
-  window.addEventListener("resize", renderOverlay);
-
-  document.addEventListener("keydown", (ev) => {
-    if (state.activeTab !== "studio") return;
-    if (ev.code === "Escape" && (state.calibratingNet || state.reassigningHitter)) {
-      ev.preventDefault();
-      setInteractiveMode(false, false);
-      return;
-    }
-    if (ev.target && ["INPUT", "SELECT", "TEXTAREA"].includes(ev.target.tagName)) return;
-    if (ev.code === "Space") {
-      ev.preventDefault();
-      els.playPauseBtn.click();
-    } else if (ev.code === "ArrowLeft") {
-      ev.preventDefault();
-      stepFrames(-1);
-    } else if (ev.code === "ArrowRight") {
-      ev.preventDefault();
-      stepFrames(1);
-    } else if (["Digit1", "Digit2", "Digit3"].includes(ev.code)) {
-      const play = getActivePlay();
-      if (!play) return;
-      const idx = parseInt(ev.code.replace("Digit", ""), 10) - 1;
-      if (play.keyframes[idx]) jumpToFrame(play.keyframes[idx].frame_idx);
     }
   });
 }
