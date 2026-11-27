@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VBall Analyser — Baseline Set &amp; Hit Studio</title>
+  <title>VBall Analyser</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -20,10 +20,7 @@
             <path d="M7.5 19.4c1.6-3.7 5.2-6.2 9.4-6.4"/>
           </svg>
         </span>
-        <div class="brand-copy">
-          <h1>VBall Analyser</h1>
-          <span class="brand-sub">Baseline Studio &amp; Serve Recorder</span>
-        </div>
+        <h1>VBall Analyser</h1>
       </div>
 
       <nav class="tab-switcher" role="tablist" aria-label="Workspace tabs">
@@ -33,6 +30,18 @@
     </div>
 
     <div class="toolbar-actions" data-studio-only>
+      <select id="sessionSelect" class="select-input" aria-label="Saved sessions">
+        <option value="">No saved sessions</option>
+      </select>
+
+      <div class="status-cluster">
+        <div id="statusBadge" class="status-pill status-idle" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="statusText">No Video</span>
+        </div>
+        <progress id="analysisProgress" class="analysis-progress hidden" max="100" value="0" aria-label="Analysis progress"></progress>
+      </div>
+
       <button id="openLoadBtn" class="btn btn-primary" type="button">
         <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M8 10V3"/>
@@ -40,47 +49,6 @@
           <path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2"/>
         </svg>
         <span>Load Video</span>
-      </button>
-
-      <select id="sessionSelect" class="select-input" aria-label="Saved sessions"></select>
-
-      <div class="status-cluster">
-        <div id="statusBadge" class="status-pill status-idle" aria-live="polite">
-          <span class="status-dot" aria-hidden="true"></span>
-          <span id="statusText">No Video Loaded</span>
-        </div>
-        <progress id="analysisProgress" class="analysis-progress hidden" max="100" value="0" aria-label="Analysis progress"></progress>
-      </div>
-    </div>
-
-    <div class="overlay-toggles" role="group" aria-label="Overlay layers" data-studio-only>
-      <button class="pill active" data-overlay="setArc" type="button" aria-pressed="true">
-        <span class="pill-dot dot-arc" aria-hidden="true"></span>
-        <span>Set Arc</span>
-      </button>
-      <button class="pill active" data-overlay="pose" type="button" aria-pressed="true">
-        <span class="pill-dot dot-pose" aria-hidden="true"></span>
-        <span>Hitter Pose</span>
-      </button>
-      <button class="pill active" data-overlay="contact" type="button" aria-pressed="true">
-        <span class="pill-dot dot-contact" aria-hidden="true"></span>
-        <span>Contact Point</span>
-      </button>
-      <button class="pill active" data-overlay="blockers" type="button" aria-pressed="true">
-        <span class="pill-dot dot-block" aria-hidden="true"></span>
-        <span>Blockers</span>
-      </button>
-      <button class="pill active" data-overlay="netTape" type="button" aria-pressed="true">
-        <span class="pill-dot dot-tape" aria-hidden="true"></span>
-        <span>Net Tape</span>
-      </button>
-      <button class="pill active" data-overlay="hud" type="button" aria-pressed="true">
-        <span class="pill-dot dot-hud" aria-hidden="true"></span>
-        <span>Mechanics HUD</span>
-      </button>
-      <button class="pill active" data-overlay="inlineStats" type="button" aria-pressed="true" title="Show or hide floating stats near the ball and players">
-        <span class="pill-dot dot-contact" aria-hidden="true"></span>
-        <span>Inline Stats</span>
       </button>
     </div>
   </header>
@@ -94,7 +62,7 @@
               <circle cx="8" cy="8" r="5"/>
               <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"/>
             </svg>
-            <span>Calibrate Net (2 Clicks)</span>
+            <span>Calibrate Net</span>
           </button>
 
           <select id="netHeightSelect" class="select-input select-compact" aria-label="Net height">
@@ -126,9 +94,9 @@
           <button id="cancelModeBtn" class="btn btn-ghost btn-small hidden" type="button">Cancel (Esc)</button>
           <div id="shortcutLegend" class="shortcut-legend" aria-label="Keyboard shortcuts">
             <kbd>Space</kbd><span>Play</span>
-            <span class="sep" aria-hidden="true">·</span>
-            <kbd>←</kbd><kbd>→</kbd><span>Frame</span>
-            <span class="sep" aria-hidden="true">·</span>
+            <span class="sep" aria-hidden="true">&middot;</span>
+            <kbd>&larr;</kbd><kbd>&rarr;</kbd><span>Frame</span>
+            <span class="sep" aria-hidden="true">&middot;</span>
             <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><span>Keyframes</span>
           </div>
         </div>
@@ -147,42 +115,32 @@
                   <path d="m7 9 5-5 5 5"/>
                   <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
                 </svg>
-                <p>Drop video file (.mp4, .mov, .mkv, .avi) to analyse</p>
+                <p>Drop video file (.mp4, .mov, .mkv, .avi)</p>
               </div>
             </div>
 
             <div id="emptyState" class="empty-state">
               <div class="empty-card">
                 <div class="empty-illustration" aria-hidden="true">
-                  <svg viewBox="0 0 220 92" fill="none">
-                    <line x1="20" y1="62" x2="200" y2="62" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
-                    <line x1="34" y1="30" x2="34" y2="66" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
-                    <line x1="186" y1="30" x2="186" y2="66" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
-                    <line x1="34" y1="40" x2="186" y2="40" stroke="#e2e8f0" stroke-width="2" stroke-dasharray="4 3"/>
-                    <path d="M 156 68 Q 112 8 68 32" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
-                    <circle cx="156" cy="68" r="3.5" fill="#38bdf8"/>
-                    <circle cx="112" cy="24" r="3" fill="#38bdf8" opacity="0.8"/>
-                    <circle cx="68" cy="32" r="6" fill="#facc15" stroke="#090d16" stroke-width="2"/>
-                    <circle cx="68" cy="32" r="10.5" stroke="#facc15" stroke-width="1.2" stroke-dasharray="3 2.5"/>
+                  <svg viewBox="0 0 200 76" fill="none">
+                    <line x1="16" y1="54" x2="184" y2="54" stroke="#3b404c" stroke-width="1.5" stroke-linecap="round"/>
+                    <line x1="28" y1="22" x2="28" y2="58" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/>
+                    <line x1="172" y1="22" x2="172" y2="58" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/>
+                    <line x1="28" y1="32" x2="172" y2="32" stroke="#d4d8e0" stroke-width="1.5" stroke-dasharray="4 3"/>
+                    <path d="M 146 60 Q 104 6 62 26" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round"/>
+                    <circle cx="62" cy="26" r="4.5" fill="#eab308" stroke="#0c0d10" stroke-width="1.5"/>
                   </svg>
                 </div>
-                <h2>Load a Baseline Volleyball Video</h2>
-                <p>Drop a short single-play clip or point to an uncut session file on disk to inspect setting path, hitter posture, contact height, and block seams.</p>
-                <div class="empty-features" aria-hidden="true">
-                  <span class="feature-chip chip-cyan">Set Trajectory</span>
-                  <span class="feature-chip chip-green">2D Hitter Pose</span>
-                  <span class="feature-chip chip-gold">Contact Height</span>
-                  <span class="feature-chip chip-rose">Block Seam</span>
-                </div>
+                <h2>Load a baseline video</h2>
+                <p>Drop an MP4, MOV, MKV, or AVI clip onto this stage, or open a local recording from disk.</p>
                 <button id="emptyLoadBtn" class="btn btn-primary btn-lg" type="button">
                   <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M8 10V3"/>
                     <path d="M5 5.5 8 2.5l3 3"/>
                     <path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2"/>
                   </svg>
-                  <span>Open Video Loader</span>
+                  <span>Load Video</span>
                 </button>
-                <p class="empty-hint">Or drag and drop an MP4, MOV, MKV, or AVI clip directly onto this stage</p>
               </div>
             </div>
           </div>
@@ -228,14 +186,48 @@
                 <button class="speed-btn" data-speed="0.5" type="button" aria-pressed="false">0.5x</button>
                 <button class="speed-btn active" data-speed="1" type="button" aria-pressed="true">1x</button>
               </div>
-              <span id="timeReadout" class="time-readout">0.00s · f0</span>
+              <span id="timeReadout" class="time-readout">0.00s &middot; f0</span>
             </div>
           </div>
         </div>
       </div>
 
+      <div class="overlay-toggles" role="group" aria-label="Overlay layers">
+        <span class="overlay-label">Layers</span>
+        <button class="pill active" data-overlay="setArc" type="button" aria-pressed="true">
+          <span class="pill-dot dot-arc" aria-hidden="true"></span>
+          <span>Set Arc</span>
+        </button>
+        <button class="pill active" data-overlay="pose" type="button" aria-pressed="true">
+          <span class="pill-dot dot-pose" aria-hidden="true"></span>
+          <span>Hitter Pose</span>
+        </button>
+        <button class="pill active" data-overlay="contact" type="button" aria-pressed="true">
+          <span class="pill-dot dot-contact" aria-hidden="true"></span>
+          <span>Contact</span>
+        </button>
+        <button class="pill active" data-overlay="blockers" type="button" aria-pressed="true">
+          <span class="pill-dot dot-block" aria-hidden="true"></span>
+          <span>Blockers</span>
+        </button>
+        <button class="pill active" data-overlay="netTape" type="button" aria-pressed="true">
+          <span class="pill-dot dot-tape" aria-hidden="true"></span>
+          <span>Net Tape</span>
+        </button>
+        <button class="pill active" data-overlay="hud" type="button" aria-pressed="true">
+          <span class="pill-dot dot-hud" aria-hidden="true"></span>
+          <span>HUD</span>
+        </button>
+        <button class="pill active" data-overlay="inlineStats" type="button" aria-pressed="true" title="Show or hide floating stats near the ball and players">
+          <span class="pill-dot dot-contact" aria-hidden="true"></span>
+          <span>Inline Stats</span>
+        </button>
+      </div>
+
       <div class="keyframes-strip" id="keyframesStrip" aria-label="Play key moments">
-        <div class="keyframe-placeholder">Select or load a play to jump to <strong>Set Release</strong>, <strong>Max Load</strong>, and <strong>Ball Contact</strong>.</div>
+        <div class="keyframe-placeholder">
+          <span>Select a play to jump to <strong>Set Release</strong>, <strong>Max Load</strong>, and <strong>Ball Contact</strong>.</span>
+        </div>
       </div>
     </section>
 
@@ -269,7 +261,7 @@
           <input id="freezeContactChk" type="checkbox" checked>
           <span class="checkbox-copy">
             <span class="checkbox-title">1.5s Contact Freeze-Frame</span>
-            <span class="checkbox-sub">Pauses at ball contact for posture &amp; block review</span>
+            <span class="checkbox-sub">Hold at ball contact in exported clip</span>
           </span>
         </label>
         <button id="exportMp4Btn" class="btn btn-primary btn-full" type="button">
@@ -318,7 +310,7 @@
         <div id="serveVideoCard" class="serve-panel serve-video-panel hidden">
           <div class="serve-panel-header">
             <div class="serve-panel-title">
-              <h2>Video Reference &amp; Net Calibration</h2>
+              <h2>Video Reference &amp; Calibration</h2>
               <span id="serveCalBadge" class="cal-scale-badge">Uncalibrated</span>
             </div>
             <div class="serve-panel-actions">
@@ -426,7 +418,7 @@
 
       <div id="receiveSummarySection" class="sidebar-section hidden">
         <div class="sidebar-header">
-          <h3>Receive Quality Summary</h3>
+          <h3>Receive Quality</h3>
           <span id="receiveScoredBadge" class="count-badge">0</span>
         </div>
         <div id="receiveSummaryCards" class="serve-kpi-grid"></div>
@@ -471,8 +463,8 @@
     <div class="modal-card">
       <div class="modal-header">
         <div class="modal-title-group">
-          <h3 id="loadDialogTitle">Load Baseline Video</h3>
-          <p class="modal-subtitle">Upload a short clip or analyse an uncut recording directly from disk.</p>
+          <h3 id="loadDialogTitle">Load Video</h3>
+          <p class="modal-subtitle">Upload a clip or open a local recording on disk.</p>
         </div>
         <button id="closeLoadBtn" class="btn btn-icon btn-ghost" type="button" aria-label="Close dialog">
           <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -488,8 +480,8 @@
               <path d="m7.5 8.5 4.5-4.5 4.5 4.5"/>
               <path d="M4 16.5v2a1.5 1.5 0 0 0 1.5 1.5h13a1.5 1.5 0 0 0 1.5-1.5v-2"/>
             </svg>
-            <span class="dropzone-title">Click to choose or drag a clip here</span>
-            <span class="dropzone-formats">Supports .mp4, .mov, .mkv, .avi</span>
+            <span class="dropzone-title">Choose or drop a video clip</span>
+            <span class="dropzone-formats">.mp4, .mov, .mkv, .avi</span>
             <span id="selectedFileName" class="selected-file-name">No file selected</span>
           </label>
           <input id="videoFileInput" class="file-input-sr" type="file" accept=".mp4,.mov,.mkv,.avi">
@@ -499,8 +491,8 @@
         <div class="or-divider" aria-hidden="true"><span>OR</span></div>
 
         <form id="localPathForm" class="modal-block">
-          <label class="field-label" for="localPathInput">Local File Path on Disk (for large uncut recordings)</label>
-          <input id="localPathInput" class="text-input mono-input" type="text" placeholder="/mnt/c/Users/Angus/Videos/scrimmage.mp4">
+          <label class="field-label" for="localPathInput">Local file path</label>
+          <input id="localPathInput" class="text-input mono-input" type="text" placeholder="/path/to/recording.mp4">
           <button id="localSubmitBtn" class="btn btn-secondary btn-full" type="submit">Analyse Local File</button>
         </form>
 

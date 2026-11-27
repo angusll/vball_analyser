@@ -483,11 +483,11 @@
     const br = tf.toPx(COURT_W, COURT_L);
 
     // Out-of-bounds apron
-    ctx.fillStyle = "#0b1324";
+    ctx.fillStyle = "#0e1014";
     ctx.fillRect(0, 0, cw, ch);
 
     // Court surface
-    ctx.fillStyle = "#142642";
+    ctx.fillStyle = "#172233";
     ctx.fillRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
 
     // Subtle front 3m zone tint
@@ -680,7 +680,7 @@
     for (const ring of rings) {
       const rPx = ring.r * tf.scale;
       // Repaint base court color inside each inner circle so semi-transparent tints stay pure
-      ctx.fillStyle = "#142642";
+      ctx.fillStyle = "#172233";
       ctx.beginPath();
       ctx.arc(tPx.x, tPx.y, rPx, 0, Math.PI * 2);
       ctx.fill();
