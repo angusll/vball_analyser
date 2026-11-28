@@ -176,6 +176,31 @@ class ServeEvent(BaseModel):
     pass_distance_m: float | None = None
     receive_score: Literal[0, 1, 2, 3] | None = None
     receive_score_manual: bool = False
+    slot_label: str | None = None
+    slot_label_manual: bool = False
+    pre_passer_x_m: float | None = None
+    pre_passer_y_m: float | None = None
+    recv_foot_x_m: float | None = None
+    recv_foot_y_m: float | None = None
+    move_dx_m: float | None = None
+    move_dy_m: float | None = None
+    move_distance_m: float | None = None
+    contact_alignment: Literal["midline", "outside"] | None = None
+
+
+class ReceiveSplitBucket(BaseModel):
+    count: int = 0
+    avg_rating: float | None = None
+    in_system_pct: float | None = None
+
+
+class VulnerabilitySplits(BaseModel):
+    short: ReceiveSplitBucket = Field(default_factory=ReceiveSplitBucket)
+    deep: ReceiveSplitBucket = Field(default_factory=ReceiveSplitBucket)
+    seam: ReceiveSplitBucket = Field(default_factory=ReceiveSplitBucket)
+    direct: ReceiveSplitBucket = Field(default_factory=ReceiveSplitBucket)
+    stationary: ReceiveSplitBucket = Field(default_factory=ReceiveSplitBucket)
+    moving: ReceiveSplitBucket = Field(default_factory=ReceiveSplitBucket)
 
 
 class PasserReceiveSummary(BaseModel):
@@ -184,6 +209,12 @@ class PasserReceiveSummary(BaseModel):
     avg_rating: float = 0.0
     in_system_pct: float = 0.0
     score_counts: dict[str, int] = Field(default_factory=lambda: {"0": 0, "1": 0, "2": 0, "3": 0})
+    move_count: int = 0
+    avg_move_m: float | None = None
+    midline_count: int = 0
+    alignment_count: int = 0
+    midline_pct: float | None = None
+    splits: VulnerabilitySplits = Field(default_factory=VulnerabilitySplits)
 
 
 class ReceiveQualitySummary(BaseModel):
@@ -196,6 +227,14 @@ class ReceiveQualitySummary(BaseModel):
     score_counts: dict[str, int] = Field(default_factory=lambda: {"0": 0, "1": 0, "2": 0, "3": 0})
     score_pcts: dict[str, float] = Field(default_factory=lambda: {"0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0})
     by_passer: list[PasserReceiveSummary] = Field(default_factory=list)
+    move_count: int = 0
+    avg_move_m: float | None = None
+    midline_count: int = 0
+    alignment_count: int = 0
+    midline_pct: float | None = None
+    splits: VulnerabilitySplits = Field(default_factory=VulnerabilitySplits)
+    active_group_by: Literal["slot", "passer"] = "slot"
+    by_slot: list[PasserReceiveSummary] = Field(default_factory=list)
 
 
 class ServeDistributionSummary(BaseModel):
@@ -230,3 +269,5 @@ class ServeSession(BaseModel):
     receive_ring_radii_m: tuple[float, float, float] = (1.5, 3.2, 4.8)
     servers: list[str] = Field(default_factory=list)
     serves: list[ServeEvent] = Field(default_factory=list)
+    session_mode: Literal["drill", "match"] = "drill"
+    passers_roster: list[str] = Field(default_factory=list)

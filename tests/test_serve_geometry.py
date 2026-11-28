@@ -13,11 +13,13 @@ from vball_analyser.serve_geometry import (
     compute_distribution_summary,
     compute_receive_summary,
     default_passer_formation,
+    infer_slot_label,
     interpolate_court_from_net,
     normalize_receive_ring_radii,
     project_court_to_image,
     project_image_to_court,
     score_receive,
+    slot_names_for_count,
 )
 
 
@@ -361,3 +363,102 @@ def test_compute_receive_summary_metrics_passer_order_and_filter() -> None:
     assert s7.in_system_pct == 50.0
     assert s7.perfect_pct == 25.0
     assert [p.passer_label for p in s7.by_passer] == ["P1", "P2", "Unassigned"]
+
+
+def test_infer_slot_label_handles_short_manual_serves_aces_and_errors() -> None:
+    assert slot_names_for_count(1) == ["Mid"]
+    assert slot_names_for_count(2) == ["Left", "Right"]
+    assert slot_names_for_count(3) == ["Left", "Mid", "Right"]
+    assert slot_names_for_count(4) == ["Left", "Mid-L", "Mid-R", "Right"]
+    assert slot_names_for_count(5) == ["Left", "Mid-L", "Mid", "Mid-R", "Right"]
+
+    passers = default_passer_formation(3)  # P1 (1.8, 6.2), P2 (4.5, 6.5), P3 (7.2, 6.2)
+    # Short "in" serve 4.0m in front of P1: no 2.5m cap, still the Left slot.
+    assert infer_slot_label(1.9, 2.2, "in", passers) == "Left"
+    assert infer_slot_label(4.6, 8.1, "ace", passers) == "Mid"
+    assert infer_slot_label(4.6, 8.1, "out", passers) is None
+    assert infer_slot_label(4.6, 0.0, "net", passers) is None
+    # Matching passer_label wins over nearest geometry; snapshot order is by x, not list order.
+    assert infer_slot_label(1.0, 6.0, "in", passers, passer_label="P3") == "Right"
+    assert infer_slot_label(1.0, 6.0, "in", list(reversed(passers))) == "Left"
+    # Unknown passer_label falls back to nearest passer.
+    assert infer_slot_label(8.0, 6.0, "in", passers, passer_label="Libero") == "Right"
+
+    # Empty snapshot: fixed thirds.
+    assert infer_slot_label(2.9, 6.0, "in", []) == "Left"
+    assert infer_slot_label(3.0, 6.0, "in", []) == "Mid"
+    assert infer_slot_label(6.0, 6.0, "ace", []) == "Mid"
+    assert infer_slot_label(6.1, 6.0, "in", []) == "Right"
+    assert infer_slot_label(6.1, 6.0, "out", []) is None
+
+
+def test_vulnerability_splits_by_slot_and_by_passer_with_legacy_fallback() -> None:
+    snap = default_passer_formation(3)
+
+    def ev(sid: str, **kw: object) -> ServeEvent:
+        return ServeEvent(serve_id=sid, index=1, passers_snapshot=snap, **kw)  # type: ignore[arg-type]
+
+    serves = [
+        ev("a", x_m=1.8, y_m=3.0, depth="short", slot_label="Left", passer_label="P1",
+           move_distance_m=0.4, contact_alignment="midline", receive_score=3),
+        ev("b", x_m=3.1, y_m=7.0, depth="deep", is_seam=True, slot_label="Left", passer_label="P1",
+           move_distance_m=1.6, contact_alignment="outside", receive_score=1),
+        # Manual serve: no movement measured.
+        ev("c", x_m=7.2, y_m=6.2, depth="deep", slot_label="Right", passer_label="P3", receive_score=2),
+        # Legacy serves (slot_label=None): inferred from passer_label / nearest snapshot passer.
+        ev("d", x_m=1.0, y_m=6.5, depth="deep", passer_label="P2", receive_score=0),
+        ev("e", x_m=7.5, y_m=7.0, depth="deep", result="ace", receive_score=0),
+        ev("f", x_m=4.5, y_m=9.6, depth="out", result="out"),
+    ]
+
+    drill = compute_receive_summary(serves)
+    assert drill.active_group_by == "slot"
+    assert compute_receive_summary(serves, session_mode="match").active_group_by == "passer"
+    assert compute_receive_summary([], session_mode="match").active_group_by == "passer"
+    assert serves[3].slot_label is None  # summary must not mutate stored serves
+
+    assert drill.scored_count == 5
+    assert drill.move_count == 2
+    assert drill.avg_move_m == 1.0
+    assert drill.midline_count == 1
+    assert drill.alignment_count == 2
+    assert drill.midline_pct == 50.0
+    sp = drill.splits
+    assert (sp.short.count, sp.short.avg_rating, sp.short.in_system_pct) == (1, 3.0, 100.0)
+    assert (sp.deep.count, sp.deep.avg_rating, sp.deep.in_system_pct) == (4, 0.75, 25.0)
+    assert (sp.seam.count, sp.seam.avg_rating, sp.seam.in_system_pct) == (1, 1.0, 0.0)
+    assert (sp.direct.count, sp.direct.avg_rating, sp.direct.in_system_pct) == (4, 1.25, 50.0)
+    assert (sp.stationary.count, sp.stationary.avg_rating) == (1, 3.0)
+    assert (sp.moving.count, sp.moving.avg_rating) == (1, 1.0)
+
+    assert [r.passer_label for r in drill.by_slot] == ["Left", "Mid", "Right"]
+    left, mid, right = drill.by_slot
+    assert (left.count, left.avg_rating, left.in_system_pct) == (2, 2.0, 50.0)
+    assert (left.avg_move_m, left.midline_pct) == (1.0, 50.0)
+    assert (left.splits.short.avg_rating, left.splits.deep.avg_rating) == (3.0, 1.0)
+    assert (left.splits.stationary.count, left.splits.moving.count) == (1, 1)
+    assert (mid.count, mid.avg_rating) == (1, 0.0)
+    assert (right.count, right.avg_rating, right.in_system_pct) == (2, 1.0, 50.0)
+    assert right.move_count == 0
+    assert right.avg_move_m is None
+    assert right.midline_pct is None
+    assert right.splits.stationary.count == 0
+    assert right.splits.stationary.avg_rating is None
+    assert right.splits.stationary.in_system_pct is None
+
+    assert [r.passer_label for r in drill.by_passer] == ["P1", "P2", "P3", "Unassigned"]
+    assert drill.by_passer[0].splits.seam.count == 1
+
+    # Old JSON (no new fields) still loads with defaults.
+    from vball_analyser.models import ServeSession
+
+    old = ServeSession.model_validate(
+        {"serve_session_id": "s1", "name": "Old", "created_at": "2026-01-01T00:00:00Z",
+         "serves": [{"serve_id": "x", "index": 1, "x_m": 4.5, "y_m": 6.0}]}
+    )
+    assert old.session_mode == "drill"
+    assert old.passers_roster == []
+    assert old.serves[0].slot_label is None
+    assert old.serves[0].slot_label_manual is False
+    assert old.serves[0].move_distance_m is None
+    assert old.serves[0].contact_alignment is None

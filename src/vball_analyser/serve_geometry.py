@@ -14,8 +14,10 @@ from vball_analyser.models import (
     PasserReceiveSummary,
     Point2D,
     ReceiveQualitySummary,
+    ReceiveSplitBucket,
     ServeDistributionSummary,
     ServeEvent,
+    VulnerabilitySplits,
 )
 
 COURT_WIDTH_M = 9.0
@@ -32,6 +34,8 @@ SETTER_TARGET_X_MAX_M = 8.5
 SETTER_TARGET_Y_MIN_M = 0.2
 SETTER_TARGET_Y_MAX_M = 4.0
 RECEIVE_RING_RADII_M: tuple[float, float, float] = (1.5, 3.2, 4.8)
+SLOT_ORDER: tuple[str, ...] = ("Left", "Mid-L", "Mid", "Mid-R", "Right")
+STATIONARY_MAX_MOVE_M = 1.0
 
 IN_BOUNDS_ZONES: tuple[str, ...] = (
     "Zone 1",
@@ -456,6 +460,42 @@ def score_receive(
     return dist, 0
 
 
+def slot_names_for_count(count: int) -> list[str]:
+    """Left-to-right slot names for a receiving formation of ``count`` passers."""
+    if count <= 0:
+        return []
+    if count == 1:
+        return ["Mid"]
+    if count == 2:
+        return ["Left", "Right"]
+    if count == 3:
+        return ["Left", "Mid", "Right"]
+    return ["Left", "Mid-L", *(["Mid"] * (count - 4)), "Mid-R", "Right"]
+
+
+def infer_slot_label(
+    x_m: float,
+    y_m: float,
+    result: Literal["in", "ace", "out", "net"],
+    passers: list[PasserPosition],
+    passer_label: str | None = None,
+) -> str | None:
+    """Map a received serve to its responsible formation slot; serve errors have no slot."""
+    if result in ("out", "net"):
+        return None
+    if not passers:
+        return "Left" if x_m < 3.0 else ("Mid" if x_m <= 6.0 else "Right")
+    ordered = sorted(passers, key=lambda p: p.x_m)
+    names = slot_names_for_count(len(ordered))
+    if passer_label:
+        for i, p in enumerate(ordered):
+            if p.label == passer_label:
+                return names[i]
+    # No distance cap: short serves and aces far from deep stances still belong to the nearest slot.
+    nearest = min(range(len(ordered)), key=lambda i: math.hypot(ordered[i].x_m - x_m, ordered[i].y_m - y_m))
+    return names[nearest]
+
+
 def _passer_sort_key(label: str) -> tuple[int, int, str]:
     if label == "Unassigned":
         return (2, 0, label)
@@ -464,11 +504,78 @@ def _passer_sort_key(label: str) -> tuple[int, int, str]:
     return (1, 0, label)
 
 
+def _slot_sort_key(label: str) -> tuple[int, int, str]:
+    if label in SLOT_ORDER:
+        return (0, SLOT_ORDER.index(label), label)
+    return (2, 0, label) if label == "Unassigned" else (1, 0, label)
+
+
+def _split_bucket(scores: list[int]) -> ReceiveSplitBucket:
+    if not scores:
+        return ReceiveSplitBucket()
+    n = len(scores)
+    return ReceiveSplitBucket(
+        count=n,
+        avg_rating=round(sum(scores) / n, 2),
+        in_system_pct=round(100.0 * sum(1 for sc in scores if sc >= 2) / n, 1),
+    )
+
+
+def _vulnerability_fields(scored: list[ServeEvent]) -> dict:
+    """Movement, alignment and split rollups shared by team and per-group receive summaries."""
+    moves = [s.move_distance_m for s in scored if s.move_distance_m is not None]
+    aligned = [s.contact_alignment for s in scored if s.contact_alignment is not None]
+    midline = aligned.count("midline")
+
+    def bucket(pred) -> ReceiveSplitBucket:
+        return _split_bucket([int(s.receive_score) for s in scored if pred(s)])  # type: ignore[arg-type]
+
+    return {
+        "move_count": len(moves),
+        "avg_move_m": round(sum(moves) / len(moves), 2) if moves else None,
+        "midline_count": midline,
+        "alignment_count": len(aligned),
+        "midline_pct": round(100.0 * midline / len(aligned), 1) if aligned else None,
+        "splits": VulnerabilitySplits(
+            short=bucket(lambda s: s.depth == "short"),
+            deep=bucket(lambda s: s.depth == "deep"),
+            seam=bucket(lambda s: s.is_seam),
+            direct=bucket(lambda s: not s.is_seam),
+            stationary=bucket(lambda s: s.move_distance_m is not None and s.move_distance_m < STATIONARY_MAX_MOVE_M),
+            moving=bucket(lambda s: s.move_distance_m is not None and s.move_distance_m >= STATIONARY_MAX_MOVE_M),
+        ),
+    }
+
+
+def _group_summaries(groups: dict[str, list[ServeEvent]], sort_key) -> list[PasserReceiveSummary]:
+    rows: list[PasserReceiveSummary] = []
+    for label in sorted(groups, key=sort_key):
+        group = groups[label]
+        scores = [int(s.receive_score) for s in group]  # type: ignore[arg-type]
+        cnt = len(scores)
+        p_counts = {"0": 0, "1": 0, "2": 0, "3": 0}
+        for sc in scores:
+            p_counts[str(sc)] += 1
+        rows.append(
+            PasserReceiveSummary(
+                passer_label=label,
+                count=cnt,
+                avg_rating=round(sum(scores) / cnt, 2),
+                in_system_pct=round(100.0 * sum(1 for sc in scores if sc >= 2) / cnt, 1),
+                score_counts=p_counts,
+                **_vulnerability_fields(group),
+            )
+        )
+    return rows
+
+
 def compute_receive_summary(
     serves: list[ServeEvent],
     server_filter: str | None = None,
+    session_mode: Literal["drill", "match"] = "drill",
 ) -> ReceiveQualitySummary:
-    """Aggregate team and per-passer receive quality ratings (0-3 scale)."""
+    """Aggregate team, per-passer and per-slot receive quality ratings (0-3 scale) with vulnerability splits."""
+    active_group_by: Literal["slot", "passer"] = "passer" if session_mode == "match" else "slot"
     filtered = (
         [s for s in serves if s.server_name == server_filter]
         if server_filter and server_filter != "All"
@@ -478,13 +585,14 @@ def compute_receive_summary(
     score_counts: dict[str, int] = {"0": 0, "1": 0, "2": 0, "3": 0}
     score_pcts: dict[str, float] = {"0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0}
     if not scored:
-        return ReceiveQualitySummary(score_counts=score_counts, score_pcts=score_pcts)
+        return ReceiveQualitySummary(score_counts=score_counts, score_pcts=score_pcts, active_group_by=active_group_by)
 
     total = len(scored)
     score_sum = 0
     in_system = 0
     perfect = 0
-    passer_buckets: dict[str, list[int]] = {}
+    passer_buckets: dict[str, list[ServeEvent]] = {}
+    slot_buckets: dict[str, list[ServeEvent]] = {}
 
     for s in scored:
         sc = int(s.receive_score)  # type: ignore[arg-type]
@@ -495,30 +603,15 @@ def compute_receive_summary(
         if sc == 3:
             perfect += 1
         label = (s.passer_label or "").strip() or "Unassigned"
-        passer_buckets.setdefault(label, []).append(sc)
+        passer_buckets.setdefault(label, []).append(s)
+        # Legacy serves (no stored slot_label) are inferred on the fly so by_slot works without re-detection.
+        slot = (s.slot_label or "").strip() or infer_slot_label(
+            s.x_m, s.y_m, s.result, s.passers_snapshot, s.passer_label
+        ) or "Unassigned"
+        slot_buckets.setdefault(slot, []).append(s)
 
     for k in ("0", "1", "2", "3"):
         score_pcts[k] = round(100.0 * score_counts[k] / total, 1)
-
-    by_passer: list[PasserReceiveSummary] = []
-    for label in sorted(passer_buckets, key=_passer_sort_key):
-        scores = passer_buckets[label]
-        cnt = len(scores)
-        p_counts = {"0": 0, "1": 0, "2": 0, "3": 0}
-        p_in_sys = 0
-        for sc in scores:
-            p_counts[str(sc)] += 1
-            if sc >= 2:
-                p_in_sys += 1
-        by_passer.append(
-            PasserReceiveSummary(
-                passer_label=label,
-                count=cnt,
-                avg_rating=round(sum(scores) / cnt, 2),
-                in_system_pct=round(100.0 * p_in_sys / cnt, 1),
-                score_counts=p_counts,
-            )
-        )
 
     return ReceiveQualitySummary(
         scored_count=total,
@@ -529,5 +622,8 @@ def compute_receive_summary(
         perfect_pct=round(100.0 * perfect / total, 1),
         score_counts=score_counts,
         score_pcts=score_pcts,
-        by_passer=by_passer,
+        by_passer=_group_summaries(passer_buckets, _passer_sort_key),
+        active_group_by=active_group_by,
+        by_slot=_group_summaries(slot_buckets, _slot_sort_key),
+        **_vulnerability_fields(scored),
     )
