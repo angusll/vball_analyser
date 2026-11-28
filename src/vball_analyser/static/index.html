@@ -285,6 +285,10 @@
             <button class="serve-mode-btn active" data-serve-mode="serve" type="button" aria-pressed="true">Serve Distribution</button>
             <button class="serve-mode-btn" data-serve-mode="receive" type="button" aria-pressed="false">Receive Quality</button>
           </div>
+          <div id="serveSessionModeGroup" class="serve-mode-switcher" role="group" aria-label="Session type: drill groups by slot, match groups by passer">
+            <button class="serve-mode-btn active" data-serve-session-mode="drill" type="button" aria-pressed="true">Drill</button>
+            <button class="serve-mode-btn" data-serve-session-mode="match" type="button" aria-pressed="false">Match</button>
+          </div>
           <select id="serveSessionSelect" class="select-input" aria-label="Serve practice sessions"></select>
           <button id="newServeSessionBtn" class="btn btn-secondary btn-small" type="button">+ New Session</button>
           <button id="deleteServeSessionBtn" class="btn btn-ghost btn-small" type="button" title="Delete the active serve session">Delete</button>
@@ -365,6 +369,14 @@
                 <option value="P3">Passer: P3</option>
                 <option value="P4">Passer: P4</option>
               </select>
+              <select id="selectedSlotLabel" class="select-input select-compact hidden" aria-label="Selected serve receive slot">
+                <option value="auto">Slot: Auto</option>
+                <option value="Left">Slot: Left</option>
+                <option value="Mid-L">Slot: Mid-L</option>
+                <option value="Mid">Slot: Mid</option>
+                <option value="Mid-R">Slot: Mid-R</option>
+                <option value="Right">Slot: Right</option>
+              </select>
               <button id="deselectServeBtn" class="btn btn-ghost btn-small hidden" type="button">Deselect</button>
               <button id="undoServeBtn" class="btn btn-secondary btn-small" type="button">Undo</button>
               <button id="clearServesBtn" class="btn btn-ghost btn-small" type="button" title="Clear all serves in this session">Clear</button>
@@ -416,6 +428,17 @@
         <div id="serveZoneBars" class="zone-bars"></div>
       </div>
 
+      <div id="passerRosterSection" class="sidebar-section hidden">
+        <div class="sidebar-header">
+          <h3>Passer Roster</h3>
+        </div>
+        <div id="passerRosterChips" class="server-chips" role="group" aria-label="Tag selected serve or set default passer"></div>
+        <form id="addPasserForm" class="inline-add-form">
+          <input id="newPasserInput" class="text-input" type="text" maxlength="24" placeholder="Add passer (e.g. OH1, L)">
+          <button class="btn btn-secondary btn-small" type="submit">Add</button>
+        </form>
+      </div>
+
       <div id="receiveSummarySection" class="sidebar-section hidden">
         <div class="sidebar-header">
           <h3>Receive Quality</h3>
@@ -423,6 +446,7 @@
         </div>
         <div id="receiveSummaryCards" class="serve-kpi-grid"></div>
         <div id="receiveScoreBars" class="zone-bars"></div>
+        <div id="receiveTeamSplits" class="team-splits" aria-label="Team vulnerability splits"></div>
         <div id="receiveRingControls" class="receive-ring-controls" aria-label="Scoring ring sizes">
           <div class="ring-controls-title">Scoring Rings</div>
           <label class="ring-slider-row" for="ringRadius3">
@@ -445,7 +469,7 @@
 
       <div id="receivePasserSection" class="sidebar-section hidden">
         <div class="sidebar-header">
-          <h3>By Passer</h3>
+          <h3 id="receiveGroupTitle">By Slot (Drill)</h3>
         </div>
         <div id="receivePasserTable" class="passer-summary-list"></div>
       </div>
