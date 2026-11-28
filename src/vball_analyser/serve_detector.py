@@ -25,9 +25,11 @@ from vball_analyser.models import (
 from vball_analyser.serve_geometry import (
     classify_serve,
     compute_court_homography,
+    infer_slot_label,
     normalize_court_calibration,
     project_image_to_court,
     score_receive,
+    slot_names_for_count,
 )
 from vball_analyser.video_io import iter_video_frame_batches, iter_video_frames, should_use_nvdec
 
@@ -36,7 +38,9 @@ POST_RECEIVE_COOLDOWN_S = 6.0
 RALLY_BREAK_MIN_GAP_S = 2.2
 MIN_DESCENT_PX = 45.0
 MIN_DESCENT_DURATION_S = 0.20
-PRE_SERVE_OFFSET_S = 0.60
+PRE_SERVE_OFFSET_S = 1.40
+PRE_SERVE_MAX_DELTA_S = 0.35
+MIN_MOVE_LOOKBACK_S = 0.45
 POST_PASS_MAX_DURATION_S = 2.6
 MIN_PASS_FLIGHT_S = 0.25
 PASSER_MATCH_MAX_DIST_M = 2.5
@@ -242,41 +246,82 @@ def _nearest_pose_frame(track: PlayerTrack, target_t: float, max_delta_s: float 
     return best
 
 
-def _snapshot_passers(
+def _pre_serve_floor_point(
+    track: PlayerTrack,
+    H: np.ndarray,
+    t_pre: float,
+    land_t: float,
+    net_center_y: float,
+) -> tuple[float, float] | None:
+    """Project a track's pre-serve ankle point: frame nearest t_pre (±0.35s), else earliest in [t_pre, land_t - 0.45s]."""
+    latest_t = land_t - MIN_MOVE_LOOKBACK_S
+    usable = [fr for fr in track.frames if fr.timestamp_s <= latest_t]
+    near = [fr for fr in usable if abs(fr.timestamp_s - t_pre) <= PRE_SERVE_MAX_DELTA_S]
+    if near:
+        fr = min(near, key=lambda f: abs(f.timestamp_s - t_pre))
+    else:
+        # Late-starting track: an appearance < 0.45s before reception stays unmeasured (None, never 0.0m)
+        later = [f for f in usable if f.timestamp_s >= t_pre]
+        if not later:
+            return None
+        fr = min(later, key=lambda f: f.timestamp_s)
+    fx, fy = extract_foot_point(fr)
+    if fy <= net_center_y + 10.0:
+        return None
+    try:
+        return project_image_to_court(H, fx, fy)
+    except ValueError:
+        return None
+
+
+def _snapshot_passers_with_tracks(
     tracks: list[PlayerTrack],
     H: np.ndarray,
-    target_t: float,
+    t_pre: float,
+    land_t: float,
     net_center_y: float,
-) -> list[PasserPosition]:
-    """Project near-side receiving passers onto top-down court meters at target_t."""
-    candidates: list[tuple[float, float]] = []
+) -> tuple[list[PasserPosition], dict[int, tuple[str, str, float, float]]]:
+    """Project near-side receiving passers at t_pre; also map track_id -> (passer_label, slot_label, cx, cy)."""
+    candidates: list[tuple[float, float, int]] = []
     for tr in tracks:
         if tr.court_side != "attacking":
             continue
-        fr = _nearest_pose_frame(tr, target_t, max_delta_s=0.30)
-        if fr is None:
+        pt = _pre_serve_floor_point(tr, H, t_pre, land_t, net_center_y)
+        if pt is None:
             continue
-        fx, fy = extract_foot_point(fr)
-        if fy <= net_center_y + 10.0:
-            continue
-        try:
-            cx, cy = project_image_to_court(H, fx, fy)
-        except ValueError:
-            continue
+        cx, cy = pt
         if -0.5 <= cx <= 9.5 and 1.2 <= cy <= 9.8:
-            candidates.append((cx, cy))
+            candidates.append((cx, cy, tr.track_id))
 
     if not candidates:
-        return []
+        return [], {}
 
     # Exclude net-tucked setter/front-row players (y < 2.8m) when 2+ deeper passers exist
     deeper = [c for c in candidates if c[1] >= 2.8]
     chosen = deeper if len(deeper) >= 2 else candidates
     chosen.sort(key=lambda c: c[0])
-    return [
-        PasserPosition(label=f"P{idx}", x_m=round(cx, 3), y_m=round(cy, 3))
-        for idx, (cx, cy) in enumerate(chosen, start=1)
-    ]
+    slots = slot_names_for_count(len(chosen))
+    passers: list[PasserPosition] = []
+    by_track: dict[int, tuple[str, str, float, float]] = {}
+    for idx, (cx, cy, track_id) in enumerate(chosen):
+        label = f"P{idx + 1}"
+        passers.append(PasserPosition(label=label, x_m=round(cx, 3), y_m=round(cy, 3)))
+        by_track[track_id] = (label, slots[idx], cx, cy)
+    return passers, by_track
+
+
+def _classify_body_contact_alignment(frame: PoseFrame, ball_x: float) -> Literal["midline", "outside"]:
+    """Midline when ball x is within ±0.65 shoulder width (or ±0.24 bbox width) of the torso center."""
+    x1, _y1, x2, _y2 = frame.bbox
+    torso_cx = 0.5 * (x1 + x2)
+    half_torso_px = 0.24 * max(16.0, x2 - x1)
+    kps = frame.keypoints
+    if len(kps) > 6:
+        ls, rs = kps[5], kps[6]
+        if ls[2] >= 0.30 and rs[2] >= 0.30 and abs(rs[0] - ls[0]) >= 12.0:
+            torso_cx = 0.5 * (ls[0] + rs[0])
+            half_torso_px = 0.65 * abs(rs[0] - ls[0])
+    return "midline" if abs(ball_x - torso_cx) <= half_torso_px else "outside"
 
 
 def _match_receiving_passer(
@@ -606,15 +651,34 @@ def detect_serve_events(
                 continue
 
             t_pre = max(w_start, land_ball.timestamp_s - PRE_SERVE_OFFSET_S)
-            passers = _snapshot_passers(tracks, H, t_pre, net_center_y)
+            passers, snapshot_tracks = _snapshot_passers_with_tracks(
+                tracks, H, t_pre, land_ball.timestamp_s, net_center_y
+            )
 
             receiver = _match_receiving_passer(tracks, H, land_ball, net_center_y)
             raw_result: Literal["in", "ace", "out", "net"]
             rec_track_id = -1
             fx_m = 0.0
             fy_m = 0.0
+            pre_x_m: float | None = None
+            pre_y_m: float | None = None
+            recv_foot_x_m: float | None = None
+            recv_foot_y_m: float | None = None
+            move_dx_m: float | None = None
+            move_dy_m: float | None = None
+            move_distance_m: float | None = None
+            contact_alignment: Literal["midline", "outside"] | None = None
             if receiver is not None:
                 rec_track_id, rec_frame, fx_m, fy_m = receiver
+                recv_foot_x_m, recv_foot_y_m = round(fx_m, 3), round(fy_m, 3)
+                contact_alignment = _classify_body_contact_alignment(rec_frame, land_ball.x)
+                rec_track = next(tr for tr in tracks if tr.track_id == rec_track_id)
+                pre_pt = _pre_serve_floor_point(rec_track, H, t_pre, land_ball.timestamp_s, net_center_y)
+                if pre_pt is not None and -1.0 <= pre_pt[0] <= 10.0 and 0.5 <= pre_pt[1] <= 10.5:
+                    pre_x_m, pre_y_m = round(pre_pt[0], 3), round(pre_pt[1], 3)
+                    move_dx_m = round(fx_m - pre_x_m, 3)
+                    move_dy_m = round(fy_m - pre_y_m, 3)
+                    move_distance_m = round(math.hypot(move_dx_m, move_dy_m), 3)
                 x1, _y1, x2, _y2 = rec_frame.bbox
                 bbox_w = max(1.0, x2 - x1)
                 bbox_cx = 0.5 * (x1 + x2)
@@ -637,6 +701,7 @@ def detect_serve_events(
             )
 
             passer_label: str | None = None
+            slot_label: str | None = None
             pass_x_m: float | None = None
             pass_y_m: float | None = None
             pass_timestamp_s: float | None = None
@@ -645,7 +710,12 @@ def detect_serve_events(
             receive_score: Literal[0, 1, 2, 3] | None = None
 
             if receiver is not None and norm_res == "in":
-                passer_label = _match_passer_label(fx_m, fy_m, passers)
+                direct = snapshot_tracks.get(rec_track_id)
+                if direct is not None:
+                    passer_label, slot_label = direct[0], direct[1]
+                else:
+                    passer_label = _match_passer_label(fx_m, fy_m, passers)
+                    slot_label = infer_slot_label(fx_m, fy_m, "in", passers, passer_label)
                 setter_contact = _trace_pass_to_setter(
                     series=series,
                     tracks=tracks,
@@ -665,6 +735,8 @@ def detect_serve_events(
                         None, None, "in", setter_target, ring_radii_m=ring_radii_m, unplayable=True
                     )
             elif norm_res == "ace":
+                # Aces charge the nearest slot but leave passer_label None unless a coach tags it
+                slot_label = infer_slot_label(nx, ny, "ace", passers)
                 pass_distance_m, receive_score = score_receive(
                     None, None, "ace", setter_target, ring_radii_m=ring_radii_m
                 )
@@ -696,6 +768,15 @@ def detect_serve_events(
                     pass_frame_idx=pass_frame_idx,
                     pass_distance_m=pass_distance_m,
                     receive_score=receive_score,
+                    slot_label=slot_label,
+                    pre_passer_x_m=pre_x_m,
+                    pre_passer_y_m=pre_y_m,
+                    recv_foot_x_m=recv_foot_x_m,
+                    recv_foot_y_m=recv_foot_y_m,
+                    move_dx_m=move_dx_m,
+                    move_dy_m=move_dy_m,
+                    move_distance_m=move_distance_m,
+                    contact_alignment=contact_alignment,
                 )
             )
             cooldown = POST_RECEIVE_COOLDOWN_S if receiver is not None else REFRACTORY_GAP_S
