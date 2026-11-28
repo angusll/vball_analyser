@@ -57,6 +57,11 @@
     <section class="stage-column" aria-label="Video review stage">
       <div class="calibration-bar">
         <div class="cal-controls">
+          <div id="studioModeGroup" class="serve-mode-switcher" role="group" aria-label="Session type: drill or match">
+            <button class="serve-mode-btn active" data-session-mode="drill" type="button" aria-pressed="true">Drill</button>
+            <button class="serve-mode-btn" data-session-mode="match" type="button" aria-pressed="false">Match</button>
+          </div>
+
           <button id="calibrateNetBtn" class="btn btn-secondary" type="button">
             <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="8" cy="8" r="5"/>
@@ -78,6 +83,14 @@
               <path d="M3.5 13.5c.4-2.4 2.2-3.8 4.5-3.8s4.1 1.4 4.5 3.8"/>
             </svg>
             <span>Reassign Hitter</span>
+          </button>
+
+          <button id="swapPlaySideBtn" class="btn btn-secondary" type="button" title="Flip the active play between our set and the opponent's set">
+            <svg class="btn-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M2.5 5.5h10l-2.5-2.5"/>
+              <path d="M13.5 10.5h-10l2.5 2.5"/>
+            </svg>
+            <span>Swap Side (Ours/Opp)</span>
           </button>
 
           <button id="rerunDetectionBtn" class="btn btn-secondary" type="button" title="Re-run ball and pose detection on the current video">
@@ -245,15 +258,24 @@
             <span>Add Here</span>
           </button>
         </div>
+        <div id="playTeamFilterGroup" class="serve-mode-switcher team-filter-group hidden" role="group" aria-label="Filter plays by team">
+          <button class="serve-mode-btn active" data-team-filter="all" type="button" aria-pressed="true">All</button>
+          <button class="serve-mode-btn" data-team-filter="ours" type="button" aria-pressed="false">Ours</button>
+          <button class="serve-mode-btn" data-team-filter="opponent" type="button" aria-pressed="false">Opponent</button>
+        </div>
         <div id="playsList" class="plays-list" role="list"></div>
       </div>
 
       <div class="sidebar-section metrics-panel">
         <div class="sidebar-header">
-          <h3>Play Mechanics</h3>
+          <div id="studioSidebarViewGroup" class="serve-mode-switcher" role="group" aria-label="Sidebar view: play mechanics or session summary">
+            <button class="serve-mode-btn active" data-sidebar-view="play" type="button" aria-pressed="true">Play</button>
+            <button class="serve-mode-btn" data-sidebar-view="session" type="button" aria-pressed="false">Session</button>
+          </div>
           <span id="metricsUnitBadge" class="unit-badge">2D Camera Plane</span>
         </div>
         <dl id="metricsList" class="metrics-grid"></dl>
+        <div id="sessionSummaryContainer" class="session-summary hidden" aria-live="polite"></div>
       </div>
 
       <div class="sidebar-section export-panel">
@@ -497,6 +519,14 @@
         </button>
       </div>
       <div class="modal-body">
+        <div class="modal-block">
+          <label class="field-label" for="loadSessionModeSelect">Session type</label>
+          <select id="loadSessionModeSelect" class="select-input">
+            <option value="drill" selected>Drill (our hitting lines)</option>
+            <option value="match">Match (ours &amp; opponent)</option>
+          </select>
+        </div>
+
         <form id="uploadForm" class="modal-block">
           <label for="videoFileInput" id="uploadDropzone" class="file-dropzone">
             <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
