@@ -70,6 +70,7 @@ class BlockerCallout(BaseModel):
     top_reach_point: Point2D
     reach_above_tape_px: float
     reach_above_tape_cm: float | None = None
+    hand_span_x: tuple[float, float] | None = None
 
 
 class BlockSummary(BaseModel):
@@ -78,6 +79,7 @@ class BlockSummary(BaseModel):
     seam_gap_px: float | None = None
     seam_gap_cm: float | None = None
     seam_interval_x: tuple[float, float] | None = None
+    block_state: Literal["unopposed", "zero_block", "single_block", "open_seam", "closed_block"] = "unopposed"
 
 
 class HitterMetrics(BaseModel):
@@ -109,6 +111,10 @@ class PlayAnalysis(BaseModel):
     block_summary: BlockSummary = Field(default_factory=BlockSummary)
     keyframes: list[KeyMoment] = Field(default_factory=list)
     tracks: list[PlayerTrack] = Field(default_factory=list)
+    team_side: Literal["ours", "opponent"] = "ours"
+    team_side_manual: bool = False
+    system_state: Literal["in_system", "out_of_system"] | None = None
+    pin_distance_m: float | None = None
 
 
 class VideoMetadata(BaseModel):
@@ -118,6 +124,51 @@ class VideoMetadata(BaseModel):
     frame_count: int
     duration_s: float
     codec: str
+
+
+class ZoneSetWindowStats(BaseModel):
+    zone: str
+    count: int = 0
+    pct: float = 0.0
+    tempo_mean_s: float | None = None
+    tempo_std_s: float | None = None
+    peak_height_mean_cm: float | None = None
+    peak_height_std_cm: float | None = None
+    pin_distance_mean_m: float | None = None
+    pin_distance_std_m: float | None = None
+
+
+class BlockIsolationStats(BaseModel):
+    opposed_count: int = 0
+    unopposed_count: int = 0
+    zero_block_count: int = 0
+    single_block_count: int = 0
+    open_seam_count: int = 0
+    closed_block_count: int = 0
+    isolation_pct: float | None = None
+    closed_block_pct: float | None = None
+    avg_open_seam_cm: float | None = None
+
+
+class OffenseBucketSummary(BaseModel):
+    play_count: int = 0
+    back_row_count: int = 0
+    back_row_pct: float = 0.0
+    zones: list[ZoneSetWindowStats] = Field(default_factory=list)
+    block_stats: BlockIsolationStats = Field(default_factory=BlockIsolationStats)
+
+
+class StudioSessionSummary(BaseModel):
+    session_mode: Literal["drill", "match"] = "drill"
+    total_plays: int = 0
+    ours_count: int = 0
+    opponent_count: int = 0
+    in_system_count: int = 0
+    in_system_pct: float = 0.0
+    ours_all: OffenseBucketSummary = Field(default_factory=OffenseBucketSummary)
+    ours_in_system: OffenseBucketSummary = Field(default_factory=OffenseBucketSummary)
+    ours_out_of_system: OffenseBucketSummary = Field(default_factory=OffenseBucketSummary)
+    opponent: OffenseBucketSummary = Field(default_factory=OffenseBucketSummary)
 
 
 class AnalysisSession(BaseModel):
@@ -130,6 +181,8 @@ class AnalysisSession(BaseModel):
     metadata: VideoMetadata
     calibration: NetCalibration
     plays: list[PlayAnalysis] = Field(default_factory=list)
+    session_mode: Literal["drill", "match"] = "drill"
+    summary: StudioSessionSummary | None = None
 
 
 class CourtCalibration(BaseModel):
