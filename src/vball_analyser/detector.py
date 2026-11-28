@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import importlib.util
 import logging
 import math
@@ -9,13 +10,19 @@ import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from itertools import accumulate
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 import cv2
 import numpy as np
 
-from vball_analyser.biomechanics import analyse_play_mechanics, classify_court_sides
+from vball_analyser.biomechanics import (
+    _jump_impulse_px,
+    analyse_play_full,
+    build_contact_candidates,
+    classify_court_sides,
+)
 from vball_analyser.calibration import classify_attack_zone, tape_y_at
 from vball_analyser.config import DEFAULT_CONFIG
 from vball_analyser.models import (
@@ -677,6 +684,7 @@ class SyntheticColorPredictor:
             (2, np.array([220, 180, 90], dtype=np.uint8)),   # Setter
             (3, np.array([110, 110, 220], dtype=np.uint8)),  # Blockers (split left/right)
             (4, np.array([140, 160, 140], dtype=np.uint8)),  # Passer
+            (5, np.array([40, 100, 230], dtype=np.uint8)),   # Far-side opponent attacker
         ]
         found: list[tuple[int, tuple[float, float, float, float], list[tuple[float, float, float]]]] = []
         next_blocker_id = 30
@@ -756,15 +764,37 @@ class SyntheticColorPredictor:
         return balls, people
 
 
+MIN_SWING_PEAK_GAP_S = 2.3
+
+
+def _select_swing_peaks(triggers: list[tuple[float, float]]) -> list[float]:
+    """Greedily pick chronological local maxima of +/-0.8s summed trigger scores, >= MIN_SWING_PEAK_GAP_S apart."""
+    ts_list = [t for t, _ in triggers]
+    prefix = list(accumulate((sc for _, sc in triggers), initial=0.0))
+    cands: list[tuple[float, int, float]] = []
+    for t in ts_list:
+        lo = bisect.bisect_left(ts_list, t - 0.8)
+        hi = bisect.bisect_right(ts_list, t + 0.8)
+        cands.append((prefix[hi] - prefix[lo], hi - lo, t))
+    # Ignore 1-frame noise spikes unless nothing else triggered
+    supported = [c for c in cands if c[1] >= 2] or cands
+    peaks: list[float] = []
+    for _score, _n, t in sorted(supported, key=lambda c: (-c[0], c[2])):
+        if all(abs(t - p) >= MIN_SWING_PEAK_GAP_S for p in peaks):
+            peaks.append(t)
+    return sorted(peaks)
+
+
 def scan_candidate_plays(
     video_path: Path,
     calibration: NetCalibration,
     predictor: FramePredictor,
     metadata: VideoMetadata,
 ) -> list[tuple[float, float]]:
-    """Return candidate [start_s, end_s] play windows using duration-aware two-pass routing."""
-    if metadata.duration_s <= DEFAULT_CONFIG.short_clip_max_sec:
-        return [(0.0, metadata.duration_s)]
+    """Return one candidate [start_s, end_s] play window per distinct swing peak (short clips stay whole)."""
+    duration_s = metadata.duration_s
+    if duration_s <= 8.0:
+        return [(0.0, duration_s)]
 
     batch_size = int(getattr(predictor, "batch_size", None) or getattr(predictor, "_batch_size", 16) or 16)
     use_nvdec = should_use_nvdec(metadata.frame_count)
@@ -774,7 +804,7 @@ def scan_candidate_plays(
     for batch in iter_video_frame_batches(
         video_path,
         start_s=0.0,
-        end_s=metadata.duration_s,
+        end_s=duration_s,
         sample_fps=10.0,
         batch_size=batch_size,
         use_nvdec=use_nvdec,
@@ -784,81 +814,62 @@ def scan_candidate_plays(
         balls.extend(b_chunk)
         people.extend(p_chunk)
     if not seen_any:
-        return [(0.0, min(metadata.duration_s, 5.0))]
-    # Identify moving balls above net tape (+35px margin)
+        return [(0.0, min(duration_s, 5.0))]
+    # Identify moving balls above net tape (+35px margin), scored by peak elevation
     by_ts: dict[float, list[BallDetection]] = {}
     for b in balls:
         by_ts.setdefault(b.timestamp_s, []).append(b)
 
     sorted_ts = sorted(by_ts.keys())
-    airborne_triggers: list[float] = []
+    triggers: list[tuple[float, float]] = []
     for idx, ts in enumerate(sorted_ts):
+        best = 0.0
         for b in by_ts[ts]:
-            if b.y <= tape_y_at(calibration, b.x) + 35.0:
-                # Verify ball is actually moving compared to neighbors
-                moving = False
-                for n_idx in range(max(0, idx - 2), min(len(sorted_ts), idx + 3)):
-                    if n_idx == idx:
-                        continue
-                    for nb in by_ts[sorted_ts[n_idx]]:
-                        if 8.0 <= math.hypot(nb.x - b.x, nb.y - b.y) <= 260.0:
-                            moving = True
-                            break
-                if moving:
-                    airborne_triggers.append(ts)
-                    break
+            margin = tape_y_at(calibration, b.x) + 35.0 - b.y
+            if margin < 0.0:
+                continue
+            # Verify ball is actually moving compared to neighbors
+            moving = any(
+                8.0 <= math.hypot(nb.x - b.x, nb.y - b.y) <= 260.0
+                for n_idx in range(max(0, idx - 2), min(len(sorted_ts), idx + 3))
+                if n_idx != idx
+                for nb in by_ts[sorted_ts[n_idx]]
+            )
+            if moving:
+                best = max(best, max(10.0, margin))
+        if best > 0.0:
+            triggers.append((ts, best))
 
-    if not airborne_triggers:
+    if not triggers:
         # Fallback: detect net-zone jumping people
-        for _f, ts, bbox in people:
-            cx = 0.5 * (bbox[0] + bbox[2])
-            if bbox[1] <= tape_y_at(calibration, cx) + 20.0:
-                airborne_triggers.append(ts)
+        jump_ts = {
+            ts
+            for _f, ts, bbox in people
+            if bbox[1] <= tape_y_at(calibration, 0.5 * (bbox[0] + bbox[2])) + 20.0
+        }
+        triggers = [(ts, 10.0) for ts in sorted(jump_ts)]
 
-    if not airborne_triggers:
-        return []
+    peaks = _select_swing_peaks(triggers) if triggers else []
+    if duration_s <= DEFAULT_CONFIG.short_clip_max_sec and len(peaks) <= 1:
+        return [(0.0, duration_s)]
 
-    # Cluster triggers separated by <= 4.0s
-    clusters: list[list[float]] = [[airborne_triggers[0]]]
-    for ts in airborne_triggers[1:]:
-        if ts - clusters[-1][-1] <= 4.0:
-            clusters[-1].append(ts)
-        else:
-            clusters.append([ts])
-
-    max_merged_window_s = 25.0
     windows: list[tuple[float, float]] = []
-    for cl in clusters:
-        if len(cl) < 2 and len(clusters) > 1:
-            continue
-        t_center = cl[-1]
-        w_start = max(0.0, round(t_center - 3.5, 2))
-        w_end = min(metadata.duration_s, round(t_center + 1.5, 2))
+    for t_peak in peaks:
+        w_start = max(0.0, round(t_peak - 2.6, 2))
+        w_end = min(duration_s, round(t_peak + 1.6, 2))
         if w_end - w_start >= 1.2:
-            if (
-                windows
-                and w_start <= windows[-1][1]
-                and (max(windows[-1][1], w_end) - windows[-1][0]) <= max_merged_window_s
-            ):
-                windows[-1] = (windows[-1][0], max(windows[-1][1], w_end))
-            else:
-                windows.append((w_start, w_end))
+            windows.append((w_start, w_end))
     return windows
 
 
-def analyse_play_window(
+def _decode_and_detect(
     video_path: Path,
-    play_index: int,
     start_s: float,
     end_s: float,
     calibration: NetCalibration,
     predictor: FramePredictor,
-    metadata: VideoMetadata,
-    session_dir: Path,
-    override_hitter_track_id: int | None = None,
-) -> tuple[PlayAnalysis, list[BallDetection]]:
-    """Run Pass 2 high-FPS pose + ball analysis for a single play window."""
-    play_id = f"play_{play_index:02d}_{uuid.uuid4().hex[:6]}"
+) -> tuple[list[tuple[int, float, np.ndarray]], list[BallDetection], list[PlayerTrack]]:
+    """Decode [start_s, end_s] at full FPS and run Pass-2 ball + pose detection once."""
     frames = list(iter_video_frames(video_path, start_s=start_s, end_s=end_s, sample_fps=None))
     if not frames:
         raise ValueError(f"No frames decoded in window [{start_s}, {end_s}]")
@@ -869,10 +880,29 @@ def analyse_play_window(
     else:
         ball_dets = predictor.detect_balls(frames, calibration)
         tracks = predictor.track_poses(frames, calibration)
+    return frames, ball_dets, tracks
+
+
+def _build_play_from_window_data(
+    video_path: Path,
+    play_index: int,
+    start_s: float,
+    end_s: float,
+    frames: list[tuple[int, float, np.ndarray]],
+    ball_dets: list[BallDetection],
+    tracks: list[PlayerTrack],
+    calibration: NetCalibration,
+    metadata: VideoMetadata,
+    session_dir: Path,
+    *,
+    session_mode: Literal["drill", "match"] = "drill",
+    override_hitter_track_id: int | None = None,
+    override_team_side: Literal["ours", "opponent"] | None = None,
+) -> PlayAnalysis:
+    """Fit the set arc, analyse mechanics/side, and write keyframe thumbnails for already-detected window data."""
+    play_id = f"play_{play_index:02d}_{uuid.uuid4().hex[:6]}"
 
     # Candidate airborne attacker wrist points near net tape to guide set-arc selection
-    from vball_analyser.biomechanics import build_contact_candidates
-
     cand_contacts = build_contact_candidates(tracks, calibration)
 
     set_traj = fit_setting_path(
@@ -883,23 +913,27 @@ def analyse_play_window(
         candidate_contact_frames=cand_contacts,
     )
 
-    setter_id, hitter_id, hitter_metrics, block_summary, keyframes = analyse_play_mechanics(
-        tracks,
-        set_traj,
-        calibration=calibration,
-        fps=metadata.fps,
-        frame_shape=(metadata.height, metadata.width),
-        override_hitter_track_id=override_hitter_track_id,
+    team_side, system_state, pin_distance_m, setter_id, hitter_id, hitter_metrics, block_summary, keyframes = (
+        analyse_play_full(
+            tracks,
+            set_traj,
+            calibration=calibration,
+            fps=metadata.fps,
+            frame_shape=(metadata.height, metadata.width),
+            session_mode=session_mode,
+            override_hitter_track_id=override_hitter_track_id,
+            override_team_side=override_team_side,
+        )
     )
 
-    # Classify attack zone from contact point or hitter position
+    # Classify attack zone from contact point or hitter position (mirrored for opponent plays)
     if hitter_metrics is not None and hitter_metrics.contact_point is not None:
         zone_x = hitter_metrics.contact_point.x
     elif set_traj is not None and set_traj.arc_points:
         zone_x = set_traj.arc_points[-1].x
     else:
         zone_x = 0.5 * (calibration.left_point.x + calibration.right_point.x)
-    attack_zone = classify_attack_zone(calibration, zone_x)
+    attack_zone = classify_attack_zone(calibration, zone_x, team_side=team_side)
 
     # Extract keyframe JPEG thumbnails directly from already-decoded frames (avoiding 3 video re-opens)
     thumbs_dir = session_dir / "thumbnails"
@@ -941,5 +975,127 @@ def analyse_play_window(
         block_summary=block_summary,
         keyframes=keyframes,
         tracks=tracks,
+        team_side=team_side,
+        team_side_manual=override_team_side in ("ours", "opponent"),
+        system_state=system_state,
+        pin_distance_m=pin_distance_m,
+    )
+    return play
+
+
+def analyse_play_window(
+    video_path: Path,
+    play_index: int,
+    start_s: float,
+    end_s: float,
+    calibration: NetCalibration,
+    predictor: FramePredictor,
+    metadata: VideoMetadata,
+    session_dir: Path,
+    override_hitter_track_id: int | None = None,
+    session_mode: Literal["drill", "match"] = "drill",
+    override_team_side: Literal["ours", "opponent"] | None = None,
+) -> tuple[PlayAnalysis, list[BallDetection]]:
+    """Run Pass 2 high-FPS pose + ball analysis for a single play window."""
+    frames, ball_dets, tracks = _decode_and_detect(video_path, start_s, end_s, calibration, predictor)
+    play = _build_play_from_window_data(
+        video_path,
+        play_index,
+        start_s,
+        end_s,
+        frames,
+        ball_dets,
+        tracks,
+        calibration,
+        metadata,
+        session_dir,
+        session_mode=session_mode,
+        override_hitter_track_id=override_hitter_track_id,
+        override_team_side=override_team_side,
     )
     return play, ball_dets
+
+
+def analyse_play_windows_shared(
+    video_path: Path,
+    windows: list[tuple[float, float]],
+    calibration: NetCalibration,
+    predictor: FramePredictor,
+    metadata: VideoMetadata,
+    session_dir: Path,
+    *,
+    session_mode: Literal["drill", "match"] = "drill",
+    on_play_ready: Callable[[int, int, PlayAnalysis, list[BallDetection]], None] | None = None,
+) -> list[tuple[PlayAnalysis, list[BallDetection]]]:
+    """Analyse play windows, running Pass-2 detection once per merged span of overlapping/adjacent windows."""
+    # Merge windows overlapping or within 0.5s into one decode span (capped at 25s to bound RAM)
+    groups: list[list[tuple[float, float]]] = []
+    for w in sorted(windows):
+        if groups:
+            g_end = max(e for _, e in groups[-1])
+            if w[0] <= g_end + 0.5 and max(g_end, w[1]) - groups[-1][0][0] <= 25.0:
+                groups[-1].append(w)
+                continue
+        groups.append([w])
+
+    def _drop_thumbnails(pruned: PlayAnalysis) -> None:
+        for km in pruned.keyframes:
+            if km.thumbnail_rel_path:
+                (session_dir / "thumbnails" / km.thumbnail_rel_path).unlink(missing_ok=True)
+
+    total = len(windows)
+    half_frame_s = 0.5 / max(metadata.fps, 1.0)
+    results: list[tuple[PlayAnalysis, list[BallDetection]]] = []
+    fallback: tuple[float, PlayAnalysis, list[BallDetection]] | None = None
+    for group in groups:
+        frames, ball_dets, tracks = _decode_and_detect(
+            video_path, group[0][0], max(e for _, e in group), calibration, predictor
+        )
+        for w_start, w_end in group:
+            w_frames = [f for f in frames if w_start - half_frame_s <= f[1] <= w_end + half_frame_s]
+            if not w_frames:
+                raise ValueError(f"No frames decoded in window [{w_start}, {w_end}]")
+            idx_set = {f[0] for f in w_frames}
+            w_balls = [b for b in ball_dets if b.frame_idx in idx_set]
+            sliced = [
+                PlayerTrack(track_id=t.track_id, court_side=t.court_side, frames=pfs)
+                for t in tracks
+                if (pfs := [pf for pf in t.frames if pf.frame_idx in idx_set])
+            ]
+            w_tracks = classify_court_sides(sliced, calibration)
+            play = _build_play_from_window_data(
+                video_path,
+                len(results) + 1,
+                w_start,
+                w_end,
+                w_frames,
+                w_balls,
+                w_tracks,
+                calibration,
+                metadata,
+                session_dir,
+                session_mode=session_mode,
+            )
+            if total > 1 and play.set_trajectory is None:
+                activity = max((_jump_impulse_px(t) for t in w_tracks), default=0.0)
+                if activity < 25.0:
+                    # Empty false-trigger window; keep only the most active one in case every window is empty
+                    if not results and (fallback is None or activity > fallback[0]):
+                        if fallback is not None:
+                            _drop_thumbnails(fallback[1])
+                        fallback = (activity, play, w_balls)
+                    else:
+                        _drop_thumbnails(play)
+                    continue
+            results.append((play, w_balls))
+            if on_play_ready is not None:
+                on_play_ready(play.index, total, play, w_balls)
+
+    if fallback is not None:
+        if results:
+            _drop_thumbnails(fallback[1])
+        else:
+            results.append((fallback[1], fallback[2]))
+            if on_play_ready is not None:
+                on_play_ready(fallback[1].index, total, fallback[1], fallback[2])
+    return results

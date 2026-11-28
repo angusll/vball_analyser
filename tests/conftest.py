@@ -89,6 +89,7 @@ def make_synthetic_baseline_video(
     add_stray_ball: bool = True,
     codec: str = "libx264",
     rally_windows: list[tuple[float, float]] | None = None,
+    far_side_rallies: list[tuple[float, float]] | None = None,
 ) -> dict:
     """Render a synthetic baseline volleyball clip with PyAV and return ground truth."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,20 +109,25 @@ def make_synthetic_baseline_video(
     fmt = "avi" if out_path.suffix.lower() == ".avi" else "mp4"
     enc_name = "mpeg4" if fmt == "avi" else codec
 
+    # Far-side rallies: an orange opponent attacker (x~650) hits a set released near the far blockers.
+    all_rallies = sorted([(s, e, "ours") for s, e in rally_windows] + [(s, e, "opponent") for s, e in far_side_rallies or []])
     gt_rallies = []
-    for rw_idx, (r_start, r_end) in enumerate(rally_windows):
+    for rw_idx, (r_start, r_end, side) in enumerate(all_rallies):
         f_rel = int(round(r_start * fps))
         f_con = int(round((r_start + 1.0) * fps))
         f_end = int(round(r_end * fps))
+        ours = side == "ours"
         gt_rallies.append(
             {
                 "index": rw_idx + 1,
+                "side": side,
                 "release_frame": f_rel,
                 "contact_frame": f_con,
                 "end_frame": f_end,
-                "setter_x": 790.0,
-                "hitter_x": 340.0,
-                "contact_y": tape_y(340.0) - 56.0,
+                "setter_x": 790.0 if ours else 540.0,
+                "release_y": 360.0 if ours else 330.0,
+                "hitter_x": 340.0 if ours else 664.0,
+                "contact_y": tape_y(340.0) - 56.0 if ours else tape_y(664.0) - 50.0,
             }
         )
 
@@ -159,25 +165,10 @@ def make_synthetic_baseline_video(
                     active = gr
                     break
 
-            # Opposing blockers (far side, ankles near net base ~480)
-            b1_jump = 0.0
-            b2_jump = 0.0
-            if active is not None:
-                dt_con = abs(frame_idx - active["contact_frame"]) / fps
-                if dt_con < 0.35:
-                    b1_jump = 58.0 * max(0.0, 1.0 - (dt_con / 0.35) ** 2)
-                    b2_jump = 50.0 * max(0.0, 1.0 - (dt_con / 0.35) ** 2)
+            ours_active = active is not None and active["side"] == "ours"
+            opp_active = active is not None and active["side"] == "opponent"
 
-            _draw_person(img, 315.0, 405.0 - b1_jump, 0.85, (110, 110, 220), arm_lift_deg=175.0)
-            _draw_person(img, 425.0, 410.0 - b2_jump, 0.85, (110, 110, 220), arm_lift_deg=172.0)
-
-            # Idle back-row passer (far down near baseline)
-            _draw_person(img, 960.0, 610.0, 1.15, (140, 160, 140), arm_lift_deg=25.0)
-
-            # Setter
-            _draw_person(img, 790.0, 465.0, 1.0, (220, 180, 90), arm_lift_deg=160.0)
-
-            # Hitter jump + ball parabola
+            # Hitter jump + arm swing timing (shared by near hitter and far opponent attacker)
             hitter_jump = 0.0
             arm_angle = 35.0
             if active is not None:
@@ -191,14 +182,51 @@ def make_synthetic_baseline_video(
                 elif dt_con > 0.15:
                     arm_angle = 45.0
 
-            _draw_person(img, 340.0, 495.0 - hitter_jump, 1.05, (90, 215, 130), arm_lift_deg=arm_angle, torso_tilt_deg=-8.0)
+            # Opposing blockers (far side, ankles near net base ~480)
+            b1_jump = 0.0
+            b2_jump = 0.0
+            if ours_active:
+                dt_con = abs(frame_idx - active["contact_frame"]) / fps
+                if dt_con < 0.35:
+                    b1_jump = 58.0 * max(0.0, 1.0 - (dt_con / 0.35) ** 2)
+                    b2_jump = 50.0 * max(0.0, 1.0 - (dt_con / 0.35) ** 2)
+
+            _draw_person(img, 315.0, 405.0 - b1_jump, 0.85, (110, 110, 220), arm_lift_deg=175.0)
+            _draw_person(img, 425.0, 410.0 - b2_jump, 0.85, (110, 110, 220), arm_lift_deg=172.0)
+
+            if far_side_rallies:
+                _draw_person(
+                    img,
+                    650.0,
+                    405.0 - (0.53 * hitter_jump if opp_active else 0.0),
+                    0.85,
+                    (40, 100, 230),
+                    arm_lift_deg=arm_angle if opp_active else 35.0,
+                )
+
+            # Idle back-row passer (far down near baseline)
+            _draw_person(img, 960.0, 610.0, 1.15, (140, 160, 140), arm_lift_deg=25.0)
+
+            # Setter
+            _draw_person(img, 790.0, 465.0, 1.0, (220, 180, 90), arm_lift_deg=160.0)
+
+            # Near hitter
+            _draw_person(
+                img,
+                340.0,
+                495.0 - (hitter_jump if ours_active else 0.0),
+                1.05,
+                (90, 215, 130),
+                arm_lift_deg=arm_angle if ours_active else 35.0,
+                torso_tilt_deg=-8.0,
+            )
 
             # Set ball along gravity parabola
             if active is not None and active["release_frame"] <= frame_idx <= active["end_frame"]:
                 if frame_idx <= active["contact_frame"]:
                     tau = (frame_idx - active["release_frame"]) / fps
                     T = (active["contact_frame"] - active["release_frame"]) / fps
-                    x0, y0 = active["setter_x"], 360.0
+                    x0, y0 = active["setter_x"], active["release_y"]
                     x1, y1 = active["hitter_x"], active["contact_y"]
                     g = 900.0
                     vx = (x1 - x0) / max(T, 0.1)

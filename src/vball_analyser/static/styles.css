@@ -1898,6 +1898,158 @@ body {
   color: var(--text-2);
 }
 
+.passer-row-toggle {
+  cursor: pointer;
+}
+
+.passer-row-toggle:hover,
+.passer-row-toggle.expanded {
+  background: var(--bg-2);
+}
+
+.passer-row-toggle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Drill/Match roster chips: name button + remove button share one pill outline */
+.roster-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 25px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.roster-chip.active {
+  background: var(--cyan-soft);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.roster-chip-name,
+.roster-chip-remove {
+  appearance: none;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.73rem;
+  cursor: pointer;
+}
+
+.roster-chip-name {
+  padding: 0 0.5rem;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster-chip.active .roster-chip-name {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.roster-chip-remove {
+  padding: 0 0.4rem;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.roster-chip-name:hover,
+.roster-chip-remove:hover {
+  color: var(--text-1);
+}
+
+.roster-chip-remove:hover {
+  background: var(--rose-soft);
+}
+
+/* Inline 2x3 vulnerability matrix (team strip + expanded By Slot / By Passer rows) */
+.team-splits {
+  margin-top: 0.5rem;
+}
+
+.split-matrix {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.45rem 0.2rem 0.55rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.team-splits .split-matrix {
+  padding: 0;
+  border-bottom: none;
+}
+
+.split-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.split-cell {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-0);
+  border: 1px solid var(--border-subtle);
+  font-size: 0.7rem;
+}
+
+.split-label {
+  color: var(--text-muted);
+}
+
+.split-val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.split-cell.split-good {
+  background: var(--green-soft);
+  border-color: rgba(74, 222, 128, 0.35);
+}
+
+.split-cell.split-good .split-val { color: var(--green); }
+
+.split-cell.split-mid {
+  background: var(--gold-soft);
+  border-color: rgba(234, 179, 8, 0.35);
+}
+
+.split-cell.split-mid .split-val { color: #fde047; }
+
+.split-cell.split-bad {
+  background: var(--rose-soft);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.split-cell.split-bad .split-val { color: var(--rose); }
+
+.split-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.split-pill {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  padding: 0.12rem 0.4rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  border: 1px solid var(--border-default);
+  color: var(--text-2);
+}
+
 .receive-score-pill {
   display: inline-flex;
   align-items: center;
@@ -2234,6 +2386,97 @@ body {
     min-height: 32px;
     height: auto;
   }
+}
+
+/* Studio Analytics: Drill | Match, Ours | Opp, Play | Session */
+.team-filter-group,
+.summary-pills {
+  align-self: flex-start;
+}
+
+.side-badge {
+  padding: 0.04rem 0.32rem;
+  border-radius: 3px;
+  font-size: 0.64rem;
+  font-weight: 650;
+  border: 1px solid transparent;
+}
+
+.side-badge.side-ours {
+  background: var(--cyan-soft);
+  color: var(--cyan);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.side-badge.side-opp {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.side-badge.side-sys {
+  background: var(--bg-2);
+  color: var(--text-2);
+  border-color: var(--border-subtle);
+}
+
+.metric-note {
+  font-size: 0.64rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.session-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.set-window-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.set-window-table caption {
+  text-align: left;
+  padding-bottom: 0.3rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.set-window-table th,
+.set-window-table td {
+  padding: 0.3rem 0.2rem;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.set-window-table thead th {
+  font-size: 0.64rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.set-window-table th[scope="row"],
+.set-window-table thead th:first-child {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.set-window-table td {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+
+.set-window-table tbody tr:last-child > * {
+  border-bottom: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

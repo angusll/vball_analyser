@@ -6,7 +6,7 @@ from pathlib import Path
 
 from vball_analyser.calibration import auto_detect_net_tape
 from vball_analyser.detector import SyntheticColorPredictor, analyse_play_window
-from vball_analyser.renderer import export_annotated_play_mp4
+from vball_analyser.renderer import _hud_text, draw_play_overlays, export_annotated_play_mp4
 from vball_analyser.video_io import iter_video_frames, probe_video
 
 
@@ -37,3 +37,31 @@ def test_export_annotated_play_mp4_with_contact_freeze(
     assert freeze_meta.codec == "h264"
     expected_extra = int(round(1.5 * round(play.fps)))
     assert freeze_meta.frame_count >= plain_meta.frame_count + expected_extra - 2
+
+
+def test_renderer_draws_opponent_header_and_unopposed_label(
+    synthetic_clip: tuple[Path, dict], tmp_path: Path
+) -> None:
+    clip_path, _gt = synthetic_clip
+    meta = probe_video(clip_path)
+    frames = [bgr for _i, _t, bgr in iter_video_frames(clip_path, sample_fps=4.0)]
+    cal = auto_detect_net_tape(frames)
+    play, _ = analyse_play_window(
+        clip_path, 1, 0.0, meta.duration_s, cal, SyntheticColorPredictor(), meta, tmp_path / "sess"
+    )
+    opp_play = play.model_copy(update={"team_side": "opponent"}, deep=True)
+    unopposed_play = play.model_copy(deep=True)
+    unopposed_play.block_summary.block_state = "unopposed"
+    unopposed_play.block_summary.blockers = []
+    unopposed_play.block_summary.seam_open = False
+
+    for p in (opp_play, unopposed_play):
+        out = draw_play_overlays(frames[0], p.start_frame, p, cal)
+        assert out.shape == frames[0].shape
+
+    opp_header, opp_rows = _hud_text(opp_play, cal)
+    plain_header, plain_rows = _hud_text(unopposed_play, cal)
+    assert "OPPONENT" in opp_header
+    assert "OPPONENT" not in plain_header
+    assert opp_rows[-1][0] == "Our Block"
+    assert plain_rows[-1][:2] == ("Block Seam", "Unopposed")

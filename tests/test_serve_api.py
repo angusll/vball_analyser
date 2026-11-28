@@ -387,3 +387,67 @@ def test_receive_quality_api_endpoints_and_server_filter(tmp_path: Path) -> None
         assert d1.status_code == 200
         assert "receive_summary" in d1.json()
         assert d1.json()["receive_summary"]["scored_count"] == 1
+
+
+def test_serve_session_mode_passers_roster_sanitization_and_splits_api(tmp_path: Path) -> None:
+    client, _ = _make_client(tmp_path)
+    with client:
+        csrf = client.get("/api/csrf").json()["csrf_token"]
+        hdr = {"X-CSRF-Token": csrf}
+
+        c_res = client.post("/api/serve-sessions", json={"name": "Mode Test"}, headers=hdr)
+        assert c_res.status_code == 200
+        sid = c_res.json()["session"]["serve_session_id"]
+        assert c_res.json()["session"]["session_mode"] == "drill"
+        assert c_res.json()["session"]["passers_roster"] == []
+        assert c_res.json()["receive_summary"]["active_group_by"] == "slot"
+
+        m_res = client.post("/api/serve-sessions", json={"name": "Match", "session_mode": "match"}, headers=hdr)
+        assert m_res.json()["session"]["session_mode"] == "match"
+        assert client.post("/api/serve-sessions", json={"session_mode": "scrimmage"}, headers=hdr).status_code == 422
+
+        # CSRF enforced on update
+        assert client.post(f"/api/serve-sessions/{sid}/update", json={"session_mode": "match"}).status_code == 403
+
+        u = client.post(f"/api/serve-sessions/{sid}/update", json={"session_mode": "match"}, headers=hdr)
+        assert u.status_code == 200
+        assert u.json()["session"]["session_mode"] == "match"
+        assert u.json()["receive_summary"]["active_group_by"] == "passer"
+        u = client.post(f"/api/serve-sessions/{sid}/update", json={"session_mode": "drill"}, headers=hdr)
+        assert u.json()["receive_summary"]["active_group_by"] == "slot"
+        assert client.post(f"/api/serve-sessions/{sid}/update", json={"session_mode": "invalid"}, headers=hdr).status_code == 422
+
+        roster = ["  OH1 ", "OH1", "", "   ", "<img src=x onerror=1>", "L" * 40] + [f"P{i}" for i in range(30)]
+        r = client.post(f"/api/serve-sessions/{sid}/update", json={"passers_roster": roster}, headers=hdr)
+        assert r.status_code == 200
+        stored = r.json()["session"]["passers_roster"]
+        assert len(stored) == 24
+        assert stored[:3] == ["OH1", "<img src=x onerror=1>", "L" * 24]
+        assert len(set(stored)) == 24
+        assert all(len(n) <= 24 for n in stored)
+        assert client.get(f"/api/serve-sessions/{sid}").json()["session"]["passers_roster"] == stored
+
+        # Slot override via API, then clear -> re-inferred
+        a = client.post(
+            f"/api/serve-sessions/{sid}/serves",
+            json={"x_m": 2.0, "y_m": 3.0, "result": "in", "slot_label": "Right", "receive_score": 2},
+            headers=hdr,
+        )
+        assert a.status_code == 200
+        serve = a.json()["session"]["serves"][0]
+        assert (serve["slot_label"], serve["slot_label_manual"]) == ("Right", True)
+        assert a.json()["receive_summary"]["by_slot"][0]["passer_label"] == "Right"
+        c = client.post(
+            f"/api/serve-sessions/{sid}/serves/{serve['serve_id']}/update",
+            json={"clear_slot_label": True},
+            headers=hdr,
+        )
+        assert c.status_code == 200
+        assert c.json()["session"]["serves"][0]["slot_label"] == "Left"
+        assert c.json()["session"]["serves"][0]["slot_label_manual"] is False
+        too_long = client.post(
+            f"/api/serve-sessions/{sid}/serves/{serve['serve_id']}/update",
+            json={"slot_label": "X" * 25},
+            headers=hdr,
+        )
+        assert too_long.status_code == 422

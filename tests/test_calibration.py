@@ -12,6 +12,7 @@ from vball_analyser.calibration import (
     auto_detect_net_tape,
     classify_attack_zone,
     cm_per_px,
+    compute_pin_distance_m,
     height_above_tape,
     net_ground_y_at,
     tape_y_at,
@@ -44,6 +45,32 @@ def test_tilted_calibration_interpolation_and_zones() -> None:
     assert classify_attack_zone(cal, 250.0) == "Zone 4 (Left)"
     assert classify_attack_zone(cal, 550.0) == "Zone 3 (Middle)"
     assert classify_attack_zone(cal, 880.0) == "Zone 2 (Right)"
+
+
+def test_mirrored_attack_zones_and_pin_distance_reversed_clicks() -> None:
+    cal = NetCalibration(left_point=Point2D(x=100.0, y=300.0), right_point=Point2D(x=1000.0, y=300.0), is_manual=True)
+    swapped = NetCalibration(left_point=cal.right_point, right_point=cal.left_point, is_manual=True)
+    cases = [
+        (0.10, "Zone 4 (Left)", "Opp Zone 2 (Right)", 0.9),
+        (0.50, "Zone 3 (Middle)", "Opp Zone 3 (Middle)", None),
+        (0.92, "Zone 2 (Right)", "Opp Zone 4 (Left)", 0.72),
+    ]
+    for c in (cal, swapped):
+        for u, ours_zone, opp_zone, pin in cases:
+            x = 100.0 + u * 900.0
+            assert classify_attack_zone(c, x) == ours_zone
+            assert classify_attack_zone(c, x, team_side="ours") == ours_zone
+            assert classify_attack_zone(c, x, team_side="opponent") == opp_zone
+            if pin is None:
+                assert compute_pin_distance_m(c, x) is None
+            else:
+                assert compute_pin_distance_m(c, x) == pytest.approx(pin, abs=1e-6)
+    assert compute_pin_distance_m(cal, None) is None
+
+    # Degenerate zero-width calibration never divides by zero
+    flat = NetCalibration(left_point=Point2D(x=500.0, y=300.0), right_point=Point2D(x=500.0, y=300.0))
+    assert classify_attack_zone(flat, 120.0) == "Zone 3 (Middle)"
+    assert compute_pin_distance_m(flat, 120.0) is None
 
 
 def test_auto_detect_tilted_net_tape(synthetic_clip: tuple[Path, dict]) -> None:

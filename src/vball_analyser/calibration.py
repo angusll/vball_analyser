@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 import cv2
 import numpy as np
@@ -59,15 +60,44 @@ def net_ground_y_at(cal: NetCalibration, x: float) -> float:
     return float(tape_y_at(cal, x) + (cal.net_height_m / 9.0) * span)
 
 
-def classify_attack_zone(cal: NetCalibration, x: float) -> str:
-    """Classify horizontal attack position along the net into Zone 4 / 3 / 2."""
-    dx = cal.right_point.x - cal.left_point.x
-    u = (x - cal.left_point.x) / dx if abs(dx) > 1e-6 else 0.5
+def normalized_net_u(cal: NetCalibration, x: float) -> float:
+    """Return x along the net as 0.0 (screen-left antenna) .. 1.0 (screen-right antenna), click-order safe."""
+    lx, rx = sorted((cal.left_point.x, cal.right_point.x))
+    dx = rx - lx
+    if dx < 1e-6:
+        return 0.5
+    return (x - lx) / dx
+
+
+def classify_attack_zone(
+    cal: NetCalibration, x: float, team_side: Literal["ours", "opponent"] = "ours"
+) -> str:
+    """Classify horizontal attack position along the net into Zone 4 / 3 / 2 (mirrored for the opponent)."""
+    u = normalized_net_u(cal, x)
+    if team_side == "opponent":
+        # Opponent faces the camera, so their left (Zone 4) is on our screen-right.
+        if u < 0.33:
+            return "Opp Zone 2 (Right)"
+        if u <= 0.67:
+            return "Opp Zone 3 (Middle)"
+        return "Opp Zone 4 (Left)"
     if u < 0.33:
         return "Zone 4 (Left)"
     if u <= 0.67:
         return "Zone 3 (Middle)"
     return "Zone 2 (Right)"
+
+
+def compute_pin_distance_m(cal: NetCalibration, x: float | None) -> float | None:
+    """Metres from the nearest antenna for pin-zone contacts (negative = outside); None in the middle."""
+    if x is None:
+        return None
+    u = normalized_net_u(cal, x)
+    if u < 0.33:
+        return round(u * 9.0, 2)
+    if u > 0.67:
+        return round((1.0 - u) * 9.0, 2)
+    return None
 
 
 def _fallback_calibration(width: int, height: int) -> NetCalibration:

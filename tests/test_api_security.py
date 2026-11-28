@@ -9,8 +9,9 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import make_synthetic_baseline_video
 from vball_analyser.config import PROJECT_ROOT, STATIC_DIR, AppConfig
-from vball_analyser.detector import SyntheticColorPredictor
+from vball_analyser.detector import SyntheticColorPredictor, analyse_play_window
 from vball_analyser.app import create_app
+from vball_analyser.storage import SessionStore
 
 
 def _make_test_client(tmp_path: Path, max_upload_bytes: int = 50 * 1024 * 1024) -> tuple[TestClient, AppConfig]:
@@ -198,6 +199,67 @@ def test_end_to_end_local_workflow_range_calibration_hitter_export(tmp_path: Pat
         assert rerun_ready["status"] == "ready"
         assert rerun_ready["calibration"]["is_manual"] is True
         assert len(rerun_ready["plays"]) >= 1
+
+
+def test_studio_mode_and_side_endpoints_csrf_and_validation(tmp_path: Path) -> None:
+    client, cfg = _make_test_client(tmp_path)
+    video_path = cfg.allowed_local_dirs[0] / "mode_clip.mp4"
+    make_synthetic_baseline_video(video_path, duration_s=3.0, fps=24)
+
+    with client:
+        csrf = client.get("/api/csrf").json()["csrf_token"]
+        hdr = {"X-CSRF-Token": csrf}
+        create_res = client.post(
+            "/api/sessions/local",
+            json={"path": str(video_path), "skip_analysis": True, "session_mode": "match"},
+            headers=hdr,
+        )
+        assert create_res.status_code == 200
+        assert create_res.json()["session_mode"] == "match"
+        sid = create_res.json()["session_id"]
+
+        # Seed one analysed play straight into the cached session
+        store = SessionStore(cfg.sessions_dir)
+        sess = store.load_session(sid)
+        play, _ = analyse_play_window(
+            video_path, 1, 0.0, sess.metadata.duration_s, sess.calibration,
+            SyntheticColorPredictor(), sess.metadata, store.session_dir(sid),
+        )
+        sess.plays.append(play)
+        store.save_session(sess)
+        pid = play.play_id
+        mode_url = f"/api/sessions/{sid}/mode"
+        side_url = f"/api/sessions/{sid}/plays/{pid}/side"
+
+        assert client.post(mode_url, json={"session_mode": "drill"}).status_code == 403
+        assert client.post(side_url, json={"team_side": "opponent"}).status_code == 403
+        assert client.post(mode_url, json={"session_mode": "drill"}, headers={"X-CSRF-Token": "bogus"}).status_code == 403
+        for method in ("put", "delete", "patch"):
+            assert getattr(client, method)(mode_url).status_code == 405
+            assert getattr(client, method)(side_url).status_code == 405
+
+        assert client.post("/api/sessions/..%5Cevil/mode", json={"session_mode": "drill"}, headers=hdr).status_code == 400
+        assert client.post(f"/api/sessions/{sid}/plays/..%5Cevil/side", json={"team_side": "opponent"}, headers=hdr).status_code == 400
+        assert client.post(f"/api/sessions/{sid}/plays/play_missing/side", json={"team_side": "opponent"}, headers=hdr).status_code == 404
+        assert client.post(mode_url, json={"session_mode": "invalid"}, headers=hdr).status_code == 422
+        assert client.post(side_url, json={"team_side": "theirs"}, headers=hdr).status_code == 422
+
+        r_mode = client.post(mode_url, json={"session_mode": "drill"}, headers=hdr)
+        assert r_mode.status_code == 200
+        body = r_mode.json()
+        assert body["session_id"] == sid
+        assert body["session_mode"] == "drill"
+        assert body["summary"]["session_mode"] == "drill"
+        assert body["summary"]["total_plays"] == 1
+
+        r_side = client.post(side_url, json={"team_side": "opponent"}, headers=hdr)
+        assert r_side.status_code == 200
+        body = r_side.json()
+        assert body["plays"][0]["team_side"] == "opponent"
+        assert body["plays"][0]["team_side_manual"] is True
+        assert body["summary"]["opponent_count"] == 1
+        assert body["summary"]["ours_all"]["play_count"] == 0
+        assert client.get(f"/api/sessions/{sid}").json()["plays"][0]["team_side"] == "opponent"
 
 
 def test_static_frontend_and_backend_security_hygiene() -> None:

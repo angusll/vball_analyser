@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
+import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
-from vball_analyser.biomechanics import analyse_play_mechanics, build_contact_candidates
+from vball_analyser.biomechanics import analyse_play_full, build_contact_candidates, compute_studio_session_summary
 from vball_analyser.calibration import classify_attack_zone
-from vball_analyser.models import AnalysisSession, BallDetection, NetCalibration, Point2D
+from vball_analyser.models import AnalysisSession, BallDetection, NetCalibration, PlayAnalysis, Point2D
 from vball_analyser.trajectory import fit_setting_path
 from vball_analyser.video_io import extract_keyframe_jpeg
 
@@ -22,6 +26,17 @@ def validate_safe_id(value: str) -> str:
     return value
 
 
+def _locked(method):  # noqa: ANN001, ANN202
+    """Run a SessionStore read-modify-write under the per-session lock (first arg is session_id)."""
+
+    @functools.wraps(method)
+    def wrapper(self, session_id, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        with self.session_lock(session_id):
+            return method(self, session_id, *args, **kwargs)
+
+    return wrapper
+
+
 class SessionStore:
     """Stores analysis sessions, raw ball caches, and exports inside data/sessions/<id>."""
 
@@ -32,6 +47,22 @@ class SessionStore:
             os.chmod(self.sessions_dir, 0o700)
         except OSError:
             pass
+        # Background analysis (worker thread) and user edits both load -> mutate -> save session.json
+        self._locks: dict[str, threading.RLock] = {}
+        self._locks_guard = threading.Lock()
+
+    def session_lock(self, session_id: str) -> threading.RLock:
+        safe_id = validate_safe_id(session_id)
+        with self._locks_guard:
+            return self._locks.setdefault(safe_id, threading.RLock())
+
+    def mutate_session(self, session_id: str, apply: Callable[[AnalysisSession], None]) -> AnalysisSession:
+        """Atomically load the latest session, apply an in-place change, and save it."""
+        with self.session_lock(session_id):
+            session = self.load_session(session_id)
+            apply(session)
+            self.save_session(session)
+            return session
 
     def session_dir(self, session_id: str) -> Path:
         safe_id = validate_safe_id(session_id)
@@ -52,6 +83,7 @@ class SessionStore:
         return sdir
 
     def save_session(self, session: AnalysisSession) -> None:
+        session.summary = compute_studio_session_summary(session.plays, session.session_mode)
         sdir = self.create_session_dir(session.session_id)
         target = sdir / "session.json"
         tmp = sdir / "session.json.tmp"
@@ -67,7 +99,10 @@ class SessionStore:
         target = sdir / "session.json"
         if not target.is_file():
             raise FileNotFoundError(f"Session not found: {session_id}")
-        return AnalysisSession.model_validate_json(target.read_text(encoding="utf-8"))
+        session = AnalysisSession.model_validate_json(target.read_text(encoding="utf-8"))
+        # Legacy session.json files predate `summary`; always serve a fresh one
+        session.summary = compute_studio_session_summary(session.plays, session.session_mode)
+        return session
 
     def list_sessions(self) -> list[AnalysisSession]:
         sessions: list[AnalysisSession] = []
@@ -114,6 +149,7 @@ class SessionStore:
                 return resolved
         raise FileNotFoundError(f"Playable video missing for session {session_id}")
 
+    @_locked
     def recalibrate_session_net(
         self,
         session_id: str,
@@ -149,77 +185,129 @@ class SessionStore:
                 play.set_trajectory.peak_height_px = px
                 play.set_trajectory.peak_height_cm = cm
 
-            setter_id, hitter_id, hitter_metrics, block_summary, keyframes = analyse_play_mechanics(
-                play.tracks,
-                play.set_trajectory,
-                calibration=cal,
-                fps=session.metadata.fps,
-                frame_shape=(session.metadata.height, session.metadata.width),
-                override_hitter_track_id=play.hitter_track_id,
-            )
-            play.setter_track_id = setter_id
-            play.hitter_track_id = hitter_id
-            play.hitter_metrics = hitter_metrics
-            play.block_summary = block_summary
-            # Preserve existing thumbnail paths when frame matches
-            old_thumbs = {k.name: k for k in play.keyframes}
-            for km in keyframes:
-                prev = old_thumbs.get(km.name)
-                if prev is not None and prev.frame_idx == km.frame_idx:
-                    km.thumbnail_rel_path = prev.thumbnail_rel_path
-            play.keyframes = keyframes
-
-            if hitter_metrics is not None and hitter_metrics.contact_point is not None:
-                play.attack_zone = classify_attack_zone(cal, hitter_metrics.contact_point.x)
+            self._reanalyse_play(session, play, None, play.hitter_track_id, _manual_side(play))
 
         self.save_session(session)
         return session
 
+    def _video_or_none(self, session_id: str) -> Path | None:
+        try:
+            return self.resolve_web_video_path(session_id)
+        except FileNotFoundError:
+            return None
+
+    def _reanalyse_play(
+        self,
+        session: AnalysisSession,
+        play: PlayAnalysis,
+        video_path: Path | None,
+        override_hitter_track_id: int | None,
+        override_team_side: str | None,
+    ) -> None:
+        """Re-run cached side/mechanics analysis for one play; extract changed keyframe JPEGs when video exists."""
+
+        def _run(hitter_override: int | None):  # noqa: ANN202
+            return analyse_play_full(
+                play.tracks,
+                play.set_trajectory,
+                calibration=session.calibration,
+                fps=session.metadata.fps,
+                frame_shape=(session.metadata.height, session.metadata.width),
+                session_mode=session.session_mode,
+                override_hitter_track_id=hitter_override,
+                override_team_side=override_team_side,
+            )
+
+        result = _run(override_hitter_track_id)
+        if result[0] != play.team_side and override_hitter_track_id is not None:
+            # Side flipped: the stored hitter belongs to the other court, let the new offense side pick
+            result = _run(None)
+        team_side, system_state, pin_distance_m, setter_id, hitter_id, hitter_metrics, block_summary, keyframes = result
+        play.team_side = team_side
+        play.system_state = system_state
+        play.pin_distance_m = pin_distance_m
+        play.setter_track_id = setter_id
+        play.hitter_track_id = hitter_id
+        play.hitter_metrics = hitter_metrics
+        play.block_summary = block_summary
+
+        sdir = self.session_dir(session.session_id)
+        old_thumbs = {k.name: k for k in play.keyframes}
+        for km in keyframes:
+            prev = old_thumbs.get(km.name)
+            if prev is not None and prev.frame_idx == km.frame_idx and prev.thumbnail_rel_path:
+                km.thumbnail_rel_path = prev.thumbnail_rel_path
+            elif video_path is not None:
+                fname = f"{play.play_id}_{km.name}.jpg"
+                extract_keyframe_jpeg(video_path, km.frame_idx, sdir / "thumbnails" / fname)
+                km.thumbnail_rel_path = fname
+        play.keyframes = keyframes
+
+        # Same zone fallback chain as the detector (contact -> set arc end -> net centre), mirrored per side
+        cal = session.calibration
+        if hitter_metrics is not None and hitter_metrics.contact_point is not None:
+            zone_x = hitter_metrics.contact_point.x
+        elif play.set_trajectory is not None and play.set_trajectory.arc_points:
+            zone_x = play.set_trajectory.arc_points[-1].x
+        else:
+            zone_x = 0.5 * (cal.left_point.x + cal.right_point.x)
+        play.attack_zone = classify_attack_zone(cal, zone_x, team_side=team_side)
+
+    @_locked
+    def update_session_mode(self, session_id: str, session_mode: Literal["drill", "match"]) -> AnalysisSession:
+        """Switch Drill/Match and re-evaluate auto sides, block states, and summary from cached tracks."""
+        session = self.load_session(session_id)
+        session.session_mode = session_mode
+        video_path = self._video_or_none(session_id)
+        for play in session.plays:
+            self._reanalyse_play(session, play, video_path, play.hitter_track_id, _manual_side(play))
+        self.save_session(session)
+        return session
+
+    @_locked
+    def update_play_team_side(
+        self, session_id: str, play_id: str, team_side: Literal["ours", "opponent", "auto"]
+    ) -> AnalysisSession:
+        """Pin a play to Ours/Opponent (or hand it back to the classifier with "auto")."""
+        session = self.load_session(session_id)
+        play = next((p for p in session.plays if p.play_id == play_id), None)
+        if play is None:
+            raise KeyError(f"Play not found: {play_id}")
+        play.team_side_manual = team_side != "auto"
+        self._reanalyse_play(
+            session,
+            play,
+            self._video_or_none(session_id),
+            play.hitter_track_id,
+            team_side if play.team_side_manual else None,
+        )
+        self.save_session(session)
+        return session
+
+    @_locked
     def reassign_play_hitter(self, session_id: str, play_id: str, track_id: int) -> AnalysisSession:
         """Swap active hitter to another cached track ID without re-running GPU detection."""
         session = self.load_session(session_id)
         target_play = next((p for p in session.plays if p.play_id == play_id), None)
         if target_play is None:
             raise KeyError(f"Play not found: {play_id}")
-        if not any(t.track_id == track_id for t in target_play.tracks):
+        track = next((t for t in target_play.tracks if t.track_id == track_id), None)
+        if track is None:
             raise ValueError(f"Track {track_id} not present in play {play_id}")
 
-        setter_id, hitter_id, hitter_metrics, block_summary, keyframes = analyse_play_mechanics(
-            target_play.tracks,
-            target_play.set_trajectory,
-            calibration=session.calibration,
-            fps=session.metadata.fps,
-            frame_shape=(session.metadata.height, session.metadata.width),
-            override_hitter_track_id=track_id,
-        )
-        target_play.setter_track_id = setter_id
-        target_play.hitter_track_id = hitter_id
-        target_play.hitter_metrics = hitter_metrics
-        target_play.block_summary = block_summary
-
-        sdir = self.session_dir(session_id)
-        try:
-            video_path = self.resolve_web_video_path(session_id)
-        except FileNotFoundError:
-            video_path = None
-
-        old_thumbs = {k.name: k for k in target_play.keyframes}
-        for km in keyframes:
-            prev = old_thumbs.get(km.name)
-            if prev is not None and prev.frame_idx == km.frame_idx and prev.thumbnail_rel_path:
-                km.thumbnail_rel_path = prev.thumbnail_rel_path
-            elif video_path is not None:
-                fname = f"{play_id}_{km.name}.jpg"
-                extract_keyframe_jpeg(video_path, km.frame_idx, sdir / "thumbnails" / fname)
-                km.thumbnail_rel_path = fname
-        target_play.keyframes = keyframes
-
-        if hitter_metrics is not None and hitter_metrics.contact_point is not None:
-            target_play.attack_zone = classify_attack_zone(session.calibration, hitter_metrics.contact_point.x)
+        video_path = self._video_or_none(session_id)
+        self._reanalyse_play(session, target_play, video_path, track_id, _manual_side(target_play))
+        other_court = "blocking" if target_play.team_side == "ours" else "attacking"
+        if target_play.hitter_track_id != track_id and track.court_side == other_court:
+            # User explicitly picked a hitter on the other court: keep team_side consistent with that track
+            target_play.team_side = "opponent" if target_play.team_side == "ours" else "ours"
+            target_play.team_side_manual = True
+            self._reanalyse_play(session, target_play, video_path, track_id, target_play.team_side)
 
         self.save_session(session)
         return session
 
+    @_locked
     def delete_play(self, session_id: str, play_id: str) -> AnalysisSession:
         session = self.load_session(session_id)
         before = len(session.plays)
@@ -230,3 +318,7 @@ class SessionStore:
             p.index = idx
         self.save_session(session)
         return session
+
+
+def _manual_side(play: PlayAnalysis) -> str | None:
+    return play.team_side if play.team_side_manual else None

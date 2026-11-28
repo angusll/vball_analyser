@@ -47,6 +47,15 @@
     "3/3: Click Any Point on Left or Right Sideline (Near Court)",
   ];
 
+  const SPLIT_CELLS = [
+    ["short", "Short"],
+    ["deep", "Deep"],
+    ["seam", "Seam"],
+    ["direct", "Direct"],
+    ["stationary", "Stay <1m"],
+    ["moving", "Move ≥1m"],
+  ];
+
   const sState = {
     initialized: false,
     mode: "serve", // "serve" | "receive"
@@ -71,6 +80,8 @@
     pendingConfirm: null, // "clear" | "deleteSession" | null
     confirmTimer: null,
     manualUnlinkedSessionId: null,
+    expandedGroup: null, // label of the By Slot / By Passer row whose vulnerability matrix is open
+    defaultPasserLabel: null, // Match mode: passer_label applied to new manual receives
   };
 
   const sEls = {
@@ -100,6 +111,14 @@
     selectedResult: document.getElementById("selectedServeResult"),
     selectedReceiveScore: document.getElementById("selectedReceiveScore"),
     selectedPasserLabel: document.getElementById("selectedPasserLabel"),
+    selectedSlotLabel: document.getElementById("selectedSlotLabel"),
+    sessionModeGroup: document.getElementById("serveSessionModeGroup"),
+    passerRosterSection: document.getElementById("passerRosterSection"),
+    passerRosterChips: document.getElementById("passerRosterChips"),
+    addPasserForm: document.getElementById("addPasserForm"),
+    newPasserInput: document.getElementById("newPasserInput"),
+    receiveTeamSplits: document.getElementById("receiveTeamSplits"),
+    receiveGroupTitle: document.getElementById("receiveGroupTitle"),
     deselectBtn: document.getElementById("deselectServeBtn"),
     undoBtn: document.getElementById("undoServeBtn"),
     clearBtn: document.getElementById("clearServesBtn"),
@@ -170,6 +189,39 @@
   function getSelectedServe() {
     if (!sState.session || !sState.selectedServeId) return null;
     return sState.session.serves.find((s) => s.serve_id === sState.selectedServeId) || null;
+  }
+
+  function isMatchMode() {
+    return Boolean(sState.session && sState.session.session_mode === "match");
+  }
+
+  async function postAndApply(url, body, errMsg) {
+    try {
+      showBanner("", false);
+      applyServePayload(await postServe(url, body));
+    } catch (err) {
+      showBanner(err.message || errMsg, true);
+      await refreshCurrentSession();
+    }
+  }
+
+  function updateSessionFields(body, errMsg) {
+    if (!sState.session) return Promise.resolve();
+    return postAndApply(
+      `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/update`,
+      body,
+      errMsg
+    );
+  }
+
+  function updateSelectedServe(body, errMsg) {
+    const sel = getSelectedServe();
+    if (!sState.session || !sel) return Promise.resolve();
+    return postAndApply(
+      `/api/serve-sessions/${encodeURIComponent(sState.session.serve_session_id)}/serves/${encodeURIComponent(sel.serve_id)}/update`,
+      body,
+      errMsg
+    );
   }
 
   function getDisplayedPassers() {
@@ -265,7 +317,7 @@
     sState.mode = mode === "receive" ? "receive" : "serve";
     const isReceive = sState.mode === "receive";
 
-    document.querySelectorAll(".serve-mode-btn").forEach((btn) => {
+    document.querySelectorAll("[data-serve-mode]").forEach((btn) => {
       const active = btn.getAttribute("data-serve-mode") === sState.mode;
       btn.classList.toggle("active", active);
       btn.setAttribute("aria-pressed", String(active));
@@ -660,6 +712,27 @@
     }
   }
 
+  // Filled arrowhead pulled back 10px from `to` so it clears the destination marker
+  function drawArrowHead(ctx, from, to, color) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const len = Math.hypot(dx, dy);
+    if (len <= 14) return;
+    const ux = dx / len;
+    const uy = dy / len;
+    const tipX = to.x - ux * 10;
+    const tipY = to.y - uy * 10;
+    const headLen = 8;
+    const headW = 4.5;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - ux * headLen - uy * headW, tipY - uy * headLen + ux * headW);
+    ctx.lineTo(tipX - ux * headLen + uy * headW, tipY - uy * headLen - ux * headW);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   function renderReceiveCourtLayers(ctx, tf, tl, br, atkR) {
     const target = getSetterTarget();
     const tPx = tf.toPx(target.x, target.y);
@@ -756,8 +829,48 @@
     ctx.textBaseline = "alphabetic";
     ctx.fillText("NET", (tl.x + br.x) / 2, tl.y - 10);
 
-    // Selected serve origin + dashed arrow to pass destination
+    // Selected serve movement chain: pre-serve stance -> reception (video-tracked serves only)
     const sel = getSelectedServe();
+    if (sel && sel.pre_passer_x_m != null && sel.pre_passer_y_m != null) {
+      const recvX = sel.recv_foot_x_m != null ? sel.recv_foot_x_m : sel.x_m;
+      const recvY = sel.recv_foot_y_m != null ? sel.recv_foot_y_m : sel.y_m;
+      const moveM = sel.move_distance_m != null
+        ? sel.move_distance_m
+        : Math.hypot(recvX - sel.pre_passer_x_m, recvY - sel.pre_passer_y_m);
+      const stancePt = tf.toPx(sel.pre_passer_x_m, sel.pre_passer_y_m);
+      const recvPt = tf.toPx(recvX, recvY);
+      ctx.save();
+      ctx.strokeStyle = "#fbbf24";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(stancePt.x, stancePt.y);
+      ctx.lineTo(recvPt.x, recvPt.y);
+      ctx.stroke();
+      drawArrowHead(ctx, stancePt, recvPt, "#fbbf24");
+
+      // Hollow stance ring
+      ctx.beginPath();
+      ctx.arc(stancePt.x, stancePt.y, 7, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.font = "700 10px sans-serif";
+      ctx.textAlign = "center";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(9, 13, 22, 0.9)";
+      ctx.fillStyle = "#fde68a";
+      const tags = [
+        ["Stance", stancePt.x, stancePt.y + 10, "top"],
+        [`${moveM.toFixed(1)}m`, (stancePt.x + recvPt.x) / 2, (stancePt.y + recvPt.y) / 2 - 5, "bottom"],
+      ];
+      for (const [txt, x, y, baseline] of tags) {
+        ctx.textBaseline = baseline;
+        ctx.strokeText(txt, x, y);
+        ctx.fillText(txt, x, y);
+      }
+      ctx.restore();
+    }
+
+    // Selected serve origin + dashed arrow to pass destination
     if (sel && sel.pass_x_m != null && sel.pass_y_m != null) {
       const origPt = tf.toPx(sel.x_m, sel.y_m);
       const passPt = tf.toPx(sel.pass_x_m, sel.pass_y_m);
@@ -772,25 +885,7 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Arrowhead near pass destination
-      const dx = passPt.x - origPt.x;
-      const dy = passPt.y - origPt.y;
-      const len = Math.hypot(dx, dy);
-      if (len > 14) {
-        const ux = dx / len;
-        const uy = dy / len;
-        const tipX = passPt.x - ux * 10;
-        const tipY = passPt.y - uy * 10;
-        const headLen = 8;
-        const headW = 4.5;
-        ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
-        ctx.beginPath();
-        ctx.moveTo(tipX, tipY);
-        ctx.lineTo(tipX - ux * headLen - uy * headW, tipY - uy * headLen + ux * headW);
-        ctx.lineTo(tipX - ux * headLen + uy * headW, tipY - uy * headLen - ux * headW);
-        ctx.closePath();
-        ctx.fill();
-      }
+      drawArrowHead(ctx, origPt, passPt, "rgba(248, 250, 252, 0.9)");
 
       // Subtle reception origin marker
       ctx.fillStyle = "rgba(56, 189, 248, 0.3)";
@@ -857,9 +952,115 @@
     }
   }
 
+  function buildSplitMatrix(summary) {
+    const wrap = document.createElement("div");
+    wrap.className = "split-matrix";
+    const grid = document.createElement("div");
+    grid.className = "split-grid";
+    const splits = summary.splits || {};
+    for (const [key, label] of SPLIT_CELLS) {
+      const b = splits[key] || {};
+      const has = b.count > 0 && b.avg_rating != null;
+      let tone = "";
+      if (has) tone = b.avg_rating >= 2.2 ? " split-good" : b.avg_rating >= 1.5 ? " split-mid" : " split-bad";
+      const cell = document.createElement("div");
+      cell.className = "split-cell" + tone;
+      const lbl = document.createElement("span");
+      lbl.className = "split-label";
+      lbl.textContent = label;
+      const val = document.createElement("span");
+      val.className = "split-val";
+      val.textContent = has ? `${Number(b.avg_rating).toFixed(2)} (${b.count})` : "—";
+      cell.appendChild(lbl);
+      cell.appendChild(val);
+      grid.appendChild(cell);
+    }
+    const pills = document.createElement("div");
+    pills.className = "split-pills";
+    const moveTxt = summary.move_count > 0 && summary.avg_move_m != null
+      ? `${Number(summary.avg_move_m).toFixed(1)}m`
+      : "N/A";
+    const midTxt = summary.midline_pct != null ? `${summary.midline_pct}%` : "N/A";
+    for (const txt of [`Avg Move: ${moveTxt}`, `Midline: ${midTxt}`]) {
+      const pill = document.createElement("span");
+      pill.className = "split-pill";
+      pill.textContent = txt;
+      pills.appendChild(pill);
+    }
+    wrap.appendChild(grid);
+    wrap.appendChild(pills);
+    return wrap;
+  }
+
+  function renderPasserRoster() {
+    const roster = (sState.session && sState.session.passers_roster) || [];
+    if (!roster.includes(sState.defaultPasserLabel)) sState.defaultPasserLabel = null;
+    const sel = getSelectedServe();
+    const activeName = sel ? sel.passer_label || null : sState.defaultPasserLabel;
+    sEls.passerRosterChips.replaceChildren();
+    for (const name of [null, ...roster]) {
+      const active = activeName === name;
+      const chip = document.createElement("span");
+      chip.className = "roster-chip" + (active ? " active" : "");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "roster-chip-name";
+      btn.textContent = name || "Unassigned";
+      btn.setAttribute("aria-pressed", String(active));
+      btn.addEventListener("click", async () => {
+        if (!getSelectedServe()) {
+          sState.defaultPasserLabel = name;
+          renderSidebar();
+          return;
+        }
+        await updateSelectedServe(name ? { passer_label: name } : { clear_passer_label: true }, "Unable to tag passer.");
+      });
+      chip.appendChild(btn);
+      if (name) {
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "roster-chip-remove";
+        rm.setAttribute("aria-label", `Remove passer ${name}`);
+        rm.textContent = "×";
+        rm.addEventListener("click", async () => {
+          await updateSessionFields({ passers_roster: roster.filter((n) => n !== name) }, "Unable to remove passer.");
+        });
+        chip.appendChild(rm);
+      }
+      sEls.passerRosterChips.appendChild(chip);
+    }
+  }
+
+  function rebuildPasserOptions(current) {
+    const roster = (sState.session && sState.session.passers_roster) || [];
+    const names = ["", ...roster, ...getDisplayedPassers().map((p) => p.label)];
+    if (current) names.push(current);
+    const opts = [...new Set(names)].map((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name ? `Passer: ${name}` : "Passer: Unassigned";
+      return opt;
+    });
+    sEls.selectedPasserLabel.replaceChildren(...opts);
+  }
+
   function renderSidebar() {
     const sess = sState.session;
     const sum = sState.summary;
+    const isReceive = sState.mode === "receive";
+    const isMatch = isMatchMode();
+
+    if (sEls.sessionModeGroup) {
+      sEls.sessionModeGroup.querySelectorAll("[data-serve-session-mode]").forEach((btn) => {
+        const active = btn.getAttribute("data-serve-session-mode") === (isMatch ? "match" : "drill");
+        btn.classList.toggle("active", active);
+        btn.setAttribute("aria-pressed", String(active));
+      });
+    }
+    if (sEls.passerRosterSection) {
+      sEls.passerRosterSection.classList.toggle("hidden", !(isReceive && isMatch));
+      renderPasserRoster();
+    }
 
     // Server chips
     sEls.serverChips.replaceChildren();
@@ -1004,11 +1205,19 @@
       }
     }
 
-    // By Passer table
+    if (sEls.receiveTeamSplits) {
+      sEls.receiveTeamSplits.replaceChildren(...(rSum ? [buildSplitMatrix(rSum)] : []));
+    }
+
+    // By Slot (Drill) / By Passer (Match) table with expandable vulnerability matrix rows
+    if (sEls.receiveGroupTitle) {
+      sEls.receiveGroupTitle.textContent = isMatch ? "By Passer (Match)" : "By Slot (Drill)";
+    }
     if (sEls.receivePasserTable) {
       sEls.receivePasserTable.replaceChildren();
-      const byPasser = rSum && Array.isArray(rSum.by_passer) ? rSum.by_passer : [];
-      if (!byPasser.length) {
+      const groupList = rSum ? (isMatch ? rSum.by_passer : rSum.by_slot) : null;
+      const groups = Array.isArray(groupList) ? groupList : [];
+      if (!groups.length) {
         const empty = document.createElement("div");
         empty.className = "serve-selection-info";
         empty.textContent = "No scored passes yet.";
@@ -1017,7 +1226,7 @@
         const head = document.createElement("div");
         head.className = "passer-row passer-row-head";
         const headers = [
-          { text: "Passer", cls: "" },
+          { text: isMatch ? "Passer" : "Slot", cls: "" },
           { text: "Cnt", cls: "passer-cell-num" },
           { text: "Avg", cls: "passer-cell-num" },
           { text: "In-Sys", cls: "passer-cell-num" },
@@ -1030,12 +1239,28 @@
         }
         sEls.receivePasserTable.appendChild(head);
 
-        for (const p of byPasser) {
+        for (const p of groups) {
+          const label = p.passer_label || "Unassigned";
+          const expanded = sState.expandedGroup === label;
           const row = document.createElement("div");
-          row.className = "passer-row";
+          row.className = "passer-row passer-row-toggle" + (expanded ? " expanded" : "");
+          row.setAttribute("role", "button");
+          row.setAttribute("tabindex", "0");
+          row.setAttribute("aria-expanded", String(expanded));
+          const toggle = () => {
+            sState.expandedGroup = expanded ? null : label;
+            renderSidebar();
+          };
+          row.addEventListener("click", toggle);
+          row.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.preventDefault();
+              toggle();
+            }
+          });
           const cLbl = document.createElement("span");
           cLbl.className = "passer-cell-label";
-          cLbl.textContent = p.passer_label || "Unassigned";
+          cLbl.textContent = label;
           const cCnt = document.createElement("span");
           cCnt.className = "passer-cell-num";
           cCnt.textContent = String(p.count || 0);
@@ -1050,6 +1275,7 @@
           row.appendChild(cAvg);
           row.appendChild(cInSys);
           sEls.receivePasserTable.appendChild(row);
+          if (expanded) sEls.receivePasserTable.appendChild(buildSplitMatrix(p));
         }
       }
     }
@@ -1113,7 +1339,6 @@
 
     // Selection info & footer controls
     const sel = getSelectedServe();
-    const isReceive = sState.mode === "receive";
     if (sel) {
       sEls.deselectBtn.classList.remove("hidden");
       sEls.selectedResult.classList.toggle("hidden", isReceive);
@@ -1124,13 +1349,21 @@
           sel.receive_score_manual && sel.receive_score != null ? String(sel.receive_score) : "auto";
       }
       if (sEls.selectedPasserLabel) {
-        sEls.selectedPasserLabel.classList.toggle("hidden", !isReceive);
+        sEls.selectedPasserLabel.classList.toggle("hidden", !isReceive || !isMatch);
+        rebuildPasserOptions(sel.passer_label);
         sEls.selectedPasserLabel.value = sel.passer_label || "";
       }
+      if (sEls.selectedSlotLabel) {
+        sEls.selectedSlotLabel.classList.toggle("hidden", !isReceive || isMatch);
+        sEls.selectedSlotLabel.value = sel.slot_label_manual && sel.slot_label ? sel.slot_label : "auto";
+      }
       if (isReceive) {
-        const scoreTxt = sel.receive_score != null ? `Score ${sel.receive_score}` : "Unscored";
-        const passerTxt = sel.passer_label ? ` · ${sel.passer_label}` : "";
-        sEls.selectionInfo.textContent = `Selected #${sel.index} (${scoreTxt}${passerTxt}) — click court or drag dot to set pass target`;
+        const parts = [sel.receive_score != null ? `Score ${sel.receive_score}` : "Unscored"];
+        const groupLabel = isMatch ? sel.passer_label : sel.slot_label;
+        if (groupLabel) parts.push(groupLabel);
+        if (sel.move_distance_m != null) parts.push(`Move ${Number(sel.move_distance_m).toFixed(1)}m`);
+        if (sel.contact_alignment) parts.push(sel.contact_alignment === "midline" ? "Midline" : "Outside body");
+        sEls.selectionInfo.textContent = `Selected #${sel.index} (${parts.join(" · ")}) — click court or drag dot to set pass target`;
       } else {
         const seamTxt = sel.is_seam && sel.seam_pair ? ` · ${sel.seam_pair[0]}-${sel.seam_pair[1]} Seam` : "";
         sEls.selectionInfo.textContent = `Selected #${sel.index} (${sel.zone}${seamTxt}) — drag dot or passers to edit`;
@@ -1140,6 +1373,7 @@
       sEls.selectedResult.classList.add("hidden");
       if (sEls.selectedReceiveScore) sEls.selectedReceiveScore.classList.add("hidden");
       if (sEls.selectedPasserLabel) sEls.selectedPasserLabel.classList.add("hidden");
+      if (sEls.selectedSlotLabel) sEls.selectedSlotLabel.classList.add("hidden");
       sEls.selectionInfo.textContent = isReceive
         ? "Click court to log receive · Drag Setter target or pass dots"
         : "Click court to log serve · Drag passers to adjust default formation";
@@ -1462,7 +1696,7 @@
   }
 
   function setupServeListeners() {
-    document.querySelectorAll(".serve-mode-btn").forEach((btn) => {
+    document.querySelectorAll("[data-serve-mode]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const mode = btn.getAttribute("data-serve-mode") || "serve";
         setServeMode(mode);
@@ -1729,6 +1963,41 @@
           showBanner(err.message || "Unable to update passer label.", true);
           await refreshCurrentSession();
         }
+      });
+    }
+
+    if (sEls.selectedSlotLabel) {
+      sEls.selectedSlotLabel.addEventListener("change", async () => {
+        const val = sEls.selectedSlotLabel.value;
+        await updateSelectedServe(
+          val === "auto" ? { clear_slot_label: true } : { slot_label: val },
+          "Unable to update receive slot."
+        );
+      });
+    }
+
+    if (sEls.sessionModeGroup) {
+      sEls.sessionModeGroup.querySelectorAll("[data-serve-session-mode]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const mode = btn.getAttribute("data-serve-session-mode");
+          if (!sState.session || sState.session.session_mode === mode) return;
+          sState.expandedGroup = null;
+          await updateSessionFields({ session_mode: mode }, "Unable to switch Drill / Match mode.");
+        });
+      });
+    }
+
+    if (sEls.addPasserForm) {
+      sEls.addPasserForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        if (!sState.session) return;
+        const name = sEls.newPasserInput.value.trim();
+        if (!name) return;
+        sEls.newPasserInput.value = "";
+        await updateSessionFields(
+          { passers_roster: [...(sState.session.passers_roster || []), name] },
+          "Unable to add passer."
+        );
       });
     }
 
@@ -2040,6 +2309,7 @@
                 timestamp_s: ts,
                 pass_x_m: clampedX,
                 pass_y_m: clampedY,
+                ...(isMatchMode() && sState.defaultPasserLabel ? { passer_label: sState.defaultPasserLabel } : {}),
               }
             );
             applyServePayload(payload);

@@ -84,3 +84,63 @@ def test_serve_tab_uses_shared_media_player_only() -> None:
         assert legacy_token not in serve_js, f"Legacy Serve player reference still present: {legacy_token}"
     assert "mediaPlayer" in serve_js
     assert "servePlayerSlot" in serve_js
+
+
+def test_serve_vulnerability_ui_dom_and_node_unit_tests(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    with client:
+        html = client.get("/").text
+    for dom_id in (
+        "serveSessionModeGroup",
+        "selectedSlotLabel",
+        "passerRosterSection",
+        "passerRosterChips",
+        "addPasserForm",
+        "newPasserInput",
+        "receiveTeamSplits",
+        "receiveGroupTitle",
+    ):
+        assert f'id="{dom_id}"' in html, f"Missing Serve-Receive DOM element: {dom_id}"
+    assert 'data-serve-session-mode="drill"' in html
+    assert 'data-serve-session-mode="match"' in html
+
+    unit = subprocess.run(
+        ["node", "--test", str(PROJECT_ROOT / "tests" / "test_serve_vulnerability_ui.mjs")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unit.returncode == 0, f"node --test failed:\n{unit.stdout}\n{unit.stderr}"
+
+
+def test_studio_analytics_ui_dom_and_node_unit_tests(tmp_path: Path) -> None:
+    client = _make_client(tmp_path)
+    with client:
+        html = client.get("/").text
+    for dom_id in (
+        "studioModeGroup",
+        "swapPlaySideBtn",
+        "playTeamFilterGroup",
+        "studioSidebarViewGroup",
+        "sessionSummaryContainer",
+        "loadSessionModeSelect",
+    ):
+        assert f'id="{dom_id}"' in html, f"Missing Studio analytics DOM element: {dom_id}"
+    for attr in (
+        'data-session-mode="drill"',
+        'data-session-mode="match"',
+        'data-team-filter="all"',
+        'data-team-filter="ours"',
+        'data-team-filter="opponent"',
+        'data-sidebar-view="play"',
+        'data-sidebar-view="session"',
+    ):
+        assert attr in html, f"Missing Studio analytics control: {attr}"
+
+    unit = subprocess.run(
+        ["node", "--test", str(PROJECT_ROOT / "tests" / "test_studio_analytics_ui.mjs")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unit.returncode == 0, f"node --test failed:\n{unit.stdout}\n{unit.stderr}"
