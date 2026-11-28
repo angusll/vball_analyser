@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from vball_analyser.detector import (
     SyntheticColorPredictor,
     YoloGpuPredictor,
     analyse_play_window,
+    analyse_play_windows_shared,
     detect_inference_device,
     scan_candidate_plays,
 )
@@ -97,6 +99,73 @@ def test_long_uncut_two_pass_segments_two_rallies(tmp_path: Path) -> None:
     assert len(windows) == 2
     assert windows[0][0] < 3.0 < windows[0][1]
     assert windows[1][0] < 16.0 < windows[1][1]
+
+
+class _FrameCountingPredictor(SyntheticColorPredictor):
+    """Counts how many times each frame index reaches Pass-2 ball detection."""
+
+    def __init__(self) -> None:
+        self.ball_frame_counts: Counter[int] = Counter()
+
+    def detect_balls(self, frames, calibration):  # type: ignore[no-untyped-def]
+        self.ball_frame_counts.update(idx for idx, _ts, _bgr in frames)
+        return super().detect_balls(frames, calibration)
+
+
+def test_multi_swing_rally_splits_ours_and_opponent_with_single_pass2_decode(tmp_path: Path) -> None:
+    clip = tmp_path / "match_rally.mp4"
+    # One rally with two swings 3.8s apart (ours then opponent) plus a later isolated ours swing
+    make_synthetic_baseline_video(
+        clip,
+        duration_s=22.0,
+        fps=24,
+        tilt_deg=1.5,
+        rally_windows=[(3.0, 4.2), (16.0, 17.2)],
+        far_side_rallies=[(6.8, 8.0)],
+    )
+    meta = probe_video(clip)
+    cal = auto_detect_net_tape([bgr for _i, _t, bgr in iter_video_frames(clip, sample_fps=1.0)])
+
+    predictor = _FrameCountingPredictor()
+    windows = scan_candidate_plays(clip, cal, predictor, meta)
+    assert len(windows) == 3
+    assert windows[0][1] > windows[1][0]  # the two rally swings overlap
+    assert windows[0][0] < 4.0 < windows[0][1]
+    assert windows[1][0] < 7.8 < windows[1][1]
+    assert windows[2][0] < 17.0 < windows[2][1]
+
+    # An extra dead-time window (no set arc, no jump) is pruned as a false trigger
+    ready: list[tuple[int, int]] = []
+    results = analyse_play_windows_shared(
+        clip,
+        windows + [(11.0, 12.4)],
+        cal,
+        predictor,
+        meta,
+        tmp_path / "session",
+        session_mode="match",
+        on_play_ready=lambda idx, total, _play, _balls: ready.append((idx, total)),
+    )
+    plays = [p for p, _ in results]
+    assert [p.index for p in plays] == [1, 2, 3]
+    assert ready == [(1, 4), (2, 4), (3, 4)]
+    assert [p.team_side for p in plays] == ["ours", "opponent", "ours"]
+    assert plays[1].attack_zone.startswith("Opp ")
+    assert all(p.set_trajectory is not None for p in plays)
+    assert len(list((tmp_path / "session" / "thumbnails").glob("*.jpg"))) == 3 * len(plays)
+
+    # Overlapping rally frames were decoded/detected once, not once per window
+    rally_frames = [f for f in predictor.ball_frame_counts if windows[1][0] * meta.fps <= f <= windows[0][1] * meta.fps]
+    assert rally_frames
+    assert max(predictor.ball_frame_counts.values()) == 1
+
+
+def test_mid_length_single_swing_clip_returns_full_window(tmp_path: Path) -> None:
+    clip = tmp_path / "mid_clip.mp4"
+    make_synthetic_baseline_video(clip, duration_s=12.0, fps=24, tilt_deg=1.5, rally_windows=[(5.0, 6.6)])
+    meta = probe_video(clip)
+    cal = auto_detect_net_tape([bgr for _i, _t, bgr in iter_video_frames(clip, sample_fps=1.0)])
+    assert scan_candidate_plays(clip, cal, SyntheticColorPredictor(), meta) == [(0.0, meta.duration_s)]
 
 
 def test_yolo_gpu_smoke_on_synthetic_clip(synthetic_clip: tuple[Path, dict]) -> None:
