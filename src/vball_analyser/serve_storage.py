@@ -16,6 +16,7 @@ from vball_analyser.serve_geometry import (
     classify_serve,
     compute_court_homography,
     default_passer_formation,
+    infer_slot_label,
     normalize_court_calibration,
     normalize_receive_ring_radii,
     score_receive,
@@ -47,6 +48,7 @@ class ServeSessionStore:
         self,
         name: str,
         video_session_id: str | None = None,
+        session_mode: Literal["drill", "match"] = "drill",
     ) -> ServeSession:
         clean_name = name.strip() or "Practice Session"
         if video_session_id is not None:
@@ -58,6 +60,7 @@ class ServeSessionStore:
             created_at=datetime.now(timezone.utc).isoformat(),
             video_session_id=video_session_id,
             status="idle",
+            session_mode=session_mode,
             progress_pct=0.0,
             default_passers=default_passer_formation(3),
             servers=[],
@@ -122,8 +125,19 @@ class ServeSessionStore:
         default_passers: list[PasserPosition] | None = None,
         setter_target: Point2D | None = None,
         receive_ring_radii_m: tuple[float, float, float] | None = None,
+        session_mode: Literal["drill", "match"] | None = None,
+        passers_roster: list[str] | None = None,
     ) -> ServeSession:
         session = self.load_session(serve_session_id)
+        if session_mode is not None:
+            session.session_mode = session_mode
+        if passers_roster is not None:
+            roster: list[str] = []
+            for raw in passers_roster:
+                label = raw.strip()[:24]
+                if label and label not in roster:
+                    roster.append(label)
+            session.passers_roster = roster[:24]
         if name is not None:
             clean = name.strip()
             if clean:
@@ -161,6 +175,8 @@ class ServeSessionStore:
                 s.depth = depth
                 s.is_seam = is_seam
                 s.seam_pair = seam_pair
+                if not s.slot_label_manual:
+                    s.slot_label = infer_slot_label(s.x_m, s.y_m, s.result, s.passers_snapshot, s.passer_label)
         recompute_receive = False
         if setter_target is not None:
             session.setter_target = clamp_setter_target(setter_target)
@@ -212,6 +228,7 @@ class ServeSessionStore:
         pass_x_m: float | None = None,
         pass_y_m: float | None = None,
         receive_score: Literal[0, 1, 2, 3] | None = None,
+        slot_label: str | None = None,
     ) -> ServeSession:
         session = self.load_session(serve_session_id)
         snapshot = (
@@ -225,6 +242,10 @@ class ServeSessionStore:
             session.servers.append(clean_server)
 
         clean_passer = (passer_label.strip()[:24] or None) if passer_label else None
+        clean_slot = (slot_label.strip()[:24] or None) if slot_label else None
+        slot_manual = clean_slot is not None and norm_res not in ("out", "net")
+        if not slot_manual:
+            clean_slot = infer_slot_label(nx, ny, norm_res, snapshot, clean_passer)
         px: float | None = None
         py: float | None = None
         dist: float | None = None
@@ -278,6 +299,8 @@ class ServeSessionStore:
             seam_pair=seam_pair,
             passers_snapshot=snapshot,
             passer_label=clean_passer,
+            slot_label=clean_slot,
+            slot_label_manual=slot_manual,
             pass_x_m=px,
             pass_y_m=py,
             pass_distance_m=dist,
@@ -303,6 +326,8 @@ class ServeSessionStore:
         pass_y_m: float | None = None,
         receive_score: Literal[0, 1, 2, 3] | None = _UNSET,
         clear_pass: bool = False,
+        slot_label: str | None = _UNSET,
+        clear_slot_label: bool = False,
     ) -> ServeSession:
         validate_safe_id(serve_id)
         session = self.load_session(serve_session_id)
@@ -381,6 +406,25 @@ class ServeSessionStore:
         if passer_label is not _UNSET:
             target.passer_label = (passer_label.strip()[:24] or None) if passer_label else None
             edited = True
+
+        reinfer_slot = geometry_changed or passer_label is not _UNSET
+        if clear_slot_label:
+            target.slot_label_manual = False
+            reinfer_slot = edited = True
+        if slot_label is not _UNSET:
+            clean_slot = (slot_label.strip()[:24] or None) if slot_label else None
+            target.slot_label_manual = clean_slot is not None
+            target.slot_label = clean_slot
+            reinfer_slot = clean_slot is None
+            edited = True
+        if target.result in ("out", "net"):
+            # Serve errors are never received, so they carry no slot.
+            target.slot_label = None
+            target.slot_label_manual = False
+        elif reinfer_slot and not target.slot_label_manual:
+            target.slot_label = infer_slot_label(
+                target.x_m, target.y_m, target.result, target.passers_snapshot, target.passer_label
+            )
 
         if clear_pass:
             target.pass_x_m = None

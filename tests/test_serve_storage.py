@@ -312,3 +312,45 @@ def test_update_serve_receive_edits_and_source_flip(tmp_path: Path) -> None:
     assert sess.serves[0].receive_score == 0
     sess = store.update_serve(sid, ev_id, result="net")
     assert sess.serves[0].receive_score is None
+
+
+def test_slot_label_inference_manual_override_and_formation_update(tmp_path: Path) -> None:
+    store = ServeSessionStore(tmp_path / "serve_sessions")
+    sess = store.create_session("Slots")
+    assert sess.session_mode == "drill"
+    sid = sess.serve_session_id
+
+    # Short manual "in" serve far ahead of the deep P1 stance still maps to Left (no distance cap)
+    sess = store.add_serve(sid, x_m=2.0, y_m=3.0, result="in")
+    sess = store.add_serve(sid, x_m=2.2, y_m=3.2, result="in")
+    sess = store.add_serve(sid, x_m=2.1, y_m=3.1, result="in", source="auto", timestamp_s=4.0)
+    s1, s2, video = sess.serves
+    assert (s1.slot_label, s1.slot_label_manual) == ("Left", False)
+    assert (s2.slot_label, s2.slot_label_manual) == ("Left", False)
+    assert video.slot_label == "Left"
+
+    # Manual override, then clear -> re-inferred
+    sess = store.update_serve(sid, s1.serve_id, slot_label="Mid")
+    assert (sess.serves[0].slot_label, sess.serves[0].slot_label_manual) == ("Mid", True)
+    sess = store.update_serve(sid, s1.serve_id, clear_slot_label=True)
+    assert (sess.serves[0].slot_label, sess.serves[0].slot_label_manual) == ("Left", False)
+    sess = store.update_serve(sid, s1.serve_id, slot_label="Mid")
+
+    # Formation drag re-infers only non-overridden pure manual serves
+    sess = store.update_session(
+        sid,
+        default_passers=[
+            PasserPosition(label="P1", x_m=0.5, y_m=6.0),
+            PasserPosition(label="P2", x_m=2.5, y_m=6.0),
+        ],
+    )
+    assert (sess.serves[0].slot_label, sess.serves[0].slot_label_manual) == ("Mid", True)
+    assert sess.serves[1].slot_label == "Right"
+    assert sess.serves[2].slot_label == "Left"  # video serve keeps its own snapshot slot
+
+    # Serve errors are not received -> no slot, override dropped
+    sess = store.update_serve(sid, s1.serve_id, result="net")
+    assert (sess.serves[0].slot_label, sess.serves[0].slot_label_manual) == (None, False)
+
+    reloaded = store.load_session(sid)
+    assert reloaded.serves[1].slot_label == "Right"

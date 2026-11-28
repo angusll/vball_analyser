@@ -65,6 +65,7 @@ class LocalVideoRequest(BaseModel):
 class CreateServeSessionRequest(BaseModel):
     name: str = Field(default="Practice Session", max_length=80)
     video_session_id: str | None = None
+    session_mode: Literal["drill", "match"] = "drill"
 
 
 class UpdateServeSessionRequest(BaseModel):
@@ -75,6 +76,8 @@ class UpdateServeSessionRequest(BaseModel):
     default_passers: list[PasserPosition] | None = None
     setter_target: Point2D | None = None
     receive_ring_radii_m: tuple[float, float, float] | None = None
+    session_mode: Literal["drill", "match"] | None = None
+    passers_roster: list[str] | None = None
 
 
 class CourtCalibrationRequest(BaseModel):
@@ -108,6 +111,7 @@ class AddServeRequest(BaseModel):
     pass_x_m: float | None = Field(default=None, ge=-3.0, le=12.0)
     pass_y_m: float | None = Field(default=None, ge=-2.0, le=13.0)
     receive_score: Literal[0, 1, 2, 3] | None = None
+    slot_label: str | None = Field(default=None, max_length=24)
 
 
 class UpdateServeRequest(BaseModel):
@@ -123,6 +127,8 @@ class UpdateServeRequest(BaseModel):
     receive_score: Literal[0, 1, 2, 3] | None = None
     clear_receive_score: bool = False
     clear_pass: bool = False
+    slot_label: str | None = Field(default=None, max_length=24)
+    clear_slot_label: bool = False
 
 
 class CalibrationRequest(BaseModel):
@@ -727,7 +733,9 @@ def create_app(
         return {
             "session": session.model_dump(),
             "summary": compute_distribution_summary(session.serves, server_filter=server_filter).model_dump(),
-            "receive_summary": compute_receive_summary(session.serves, server_filter=server_filter).model_dump(),
+            "receive_summary": compute_receive_summary(
+                session.serves, server_filter=server_filter, session_mode=session.session_mode
+            ).model_dump(),
         }
 
     async def _run_serve_auto_detect(serve_session_id: str, server_name: str) -> None:
@@ -782,7 +790,9 @@ def create_app(
         try:
             if body.video_session_id is not None:
                 store.load_session(body.video_session_id)
-            sess = serve_store.create_session(name=body.name, video_session_id=body.video_session_id)
+            sess = serve_store.create_session(
+                name=body.name, video_session_id=body.video_session_id, session_mode=body.session_mode
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
@@ -814,6 +824,8 @@ def create_app(
                 "default_passers": body.default_passers,
                 "setter_target": body.setter_target,
                 "receive_ring_radii_m": body.receive_ring_radii_m,
+                "session_mode": body.session_mode,
+                "passers_roster": body.passers_roster,
             }
             if body.clear_video_session:
                 kwargs["video_session_id"] = None
@@ -952,6 +964,7 @@ def create_app(
                 pass_x_m=body.pass_x_m,
                 pass_y_m=body.pass_y_m,
                 receive_score=body.receive_score,
+                slot_label=body.slot_label,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -978,7 +991,10 @@ def create_app(
                 "pass_x_m": body.pass_x_m,
                 "pass_y_m": body.pass_y_m,
                 "clear_pass": body.clear_pass,
+                "clear_slot_label": body.clear_slot_label,
             }
+            if body.slot_label is not None:
+                kwargs["slot_label"] = body.slot_label
             if body.clear_passer_label:
                 kwargs["passer_label"] = None
             elif body.passer_label is not None:
