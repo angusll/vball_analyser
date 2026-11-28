@@ -24,6 +24,7 @@ from vball_analyser.detector import (
     FramePredictor,
     YoloGpuPredictor,
     analyse_play_window,
+    analyse_play_windows_shared,
     scan_candidate_plays,
 )
 from vball_analyser.models import AnalysisSession, CourtCalibration, PasserPosition, Point2D, ServeSession
@@ -60,6 +61,7 @@ class LocalVideoRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1024)
     net_height_m: float = Field(default=2.43, ge=1.8, le=2.7)
     skip_analysis: bool = False
+    session_mode: Literal["drill", "match"] = "drill"
 
 
 class CreateServeSessionRequest(BaseModel):
@@ -145,6 +147,14 @@ class AddPlayRequest(BaseModel):
 
 class ReassignHitterRequest(BaseModel):
     track_id: int
+
+
+class UpdateSessionModeRequest(BaseModel):
+    session_mode: Literal["drill", "match"]
+
+
+class UpdatePlaySideRequest(BaseModel):
+    team_side: Literal["ours", "opponent", "auto"]
 
 
 class ExportPlayRequest(BaseModel):
@@ -283,26 +293,28 @@ def create_app(
                 session.progress_pct = 35.0
                 store.save_session(session)
 
-                total = max(1, len(windows))
-                for idx, (w_start, w_end) in enumerate(windows, start=1):
-                    # Re-read calibration in case user adjusted 2-click endpoints while scanning
-                    latest = store.load_session(session_id)
-                    cal_to_use = latest.calibration
-                    play, raw_balls = await asyncio.to_thread(
-                        analyse_play_window,
-                        web_mp4,
-                        idx,
-                        w_start,
-                        w_end,
-                        cal_to_use,
-                        active_predictor,
-                        latest.metadata,
-                        sdir,
-                    )
+                # Re-read calibration/mode in case the user adjusted them while scanning
+                latest = store.load_session(session_id)
+
+                def _on_play_ready(idx: int, total: int, play, raw_balls) -> None:  # noqa: ANN001
+                    # Runs in the worker thread; persist each play as soon as it is ready
                     store.save_play_ball_cache(session_id, play.play_id, raw_balls)
-                    latest.plays.append(play)
-                    latest.progress_pct = round(35.0 + 65.0 * (idx / total), 1)
-                    store.save_session(latest)
+                    current = store.load_session(session_id)
+                    current.plays.append(play)
+                    current.progress_pct = round(35.0 + 65.0 * (idx / max(1, total)), 1)
+                    store.save_session(current)
+
+                await asyncio.to_thread(
+                    analyse_play_windows_shared,
+                    web_mp4,
+                    windows,
+                    latest.calibration,
+                    active_predictor,
+                    latest.metadata,
+                    sdir,
+                    session_mode=latest.session_mode,
+                    on_play_ready=_on_play_ready,
+                )
 
             final_sess = store.load_session(session_id)
             final_sess.status = "ready"
@@ -366,6 +378,7 @@ def create_app(
         file: UploadFile = File(...),
         net_height_m: float = Form(2.43),
         skip_analysis: bool = Form(False),
+        session_mode: Literal["drill", "match"] = Form("drill"),
     ) -> JSONResponse:
         _require_csrf(request)
         if not (1.8 <= net_height_m <= 2.7):
@@ -426,6 +439,7 @@ def create_app(
             metadata=meta,
             calibration=initial_cal,
             plays=[],
+            session_mode=session_mode,
         )
         store.save_session(session)
         if not skip_analysis:
@@ -469,6 +483,7 @@ def create_app(
             metadata=meta,
             calibration=initial_cal,
             plays=[],
+            session_mode=body.session_mode,
         )
         store.save_session(session)
         if not body.skip_analysis:
@@ -631,6 +646,7 @@ def create_app(
                 active_predictor,
                 session.metadata,
                 sdir,
+                session_mode=session.session_mode,
             )
         store.save_play_ball_cache(session_id, play.play_id, raw_balls)
         session.plays.append(play)
@@ -648,6 +664,37 @@ def create_app(
         try:
             validate_safe_id(play_id)
             updated = store.reassign_play_hitter(session_id, play_id, body.track_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Session not found.") from exc
+        return JSONResponse(updated.model_dump())
+
+    @app.post("/api/sessions/{session_id}/mode")
+    async def update_session_mode(
+        session_id: str, request: Request, body: UpdateSessionModeRequest
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            validate_safe_id(session_id)
+            updated = store.update_session_mode(session_id, body.session_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Session not found.") from exc
+        return JSONResponse(updated.model_dump())
+
+    @app.post("/api/sessions/{session_id}/plays/{play_id}/side")
+    async def update_play_side(
+        session_id: str, play_id: str, request: Request, body: UpdatePlaySideRequest
+    ) -> JSONResponse:
+        _require_csrf(request)
+        try:
+            validate_safe_id(session_id)
+            validate_safe_id(play_id)
+            updated = store.update_play_team_side(session_id, play_id, body.team_side)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:

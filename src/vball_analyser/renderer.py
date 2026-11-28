@@ -36,8 +36,8 @@ def _fmt_height_cm(above_tape_cm: float, net_height_m: float) -> str:
     return f"{total_cm:.0f}cm ({above_tape_cm:+.0f})"
 
 
-def _draw_top_left_hud(img: np.ndarray, play: PlayAnalysis, cal: NetCalibration) -> None:
-    """Render an always-visible translucent Play Mechanics HUD on the top-left corner."""
+def _hud_text(play: PlayAnalysis, cal: NetCalibration) -> tuple[str, list[tuple[str, str, tuple[int, int, int]]]]:
+    """Build the HUD header and (label, value, colour) rows for a play."""
     traj = play.set_trajectory
     hm = play.hitter_metrics
     blk = play.block_summary
@@ -58,9 +58,18 @@ def _draw_top_left_hud(img: np.ndarray, play: PlayAnalysis, cal: NetCalibration)
         else (
             "Open"
             if blk.seam_open
-            else ("Closed" if len(blk.blockers) >= 2 else ("Single Block" if len(blk.blockers) == 1 else "No Block"))
+            else (
+                "Closed"
+                if len(blk.blockers) >= 2
+                else (
+                    "Single Block"
+                    if len(blk.blockers) == 1
+                    else ("Unopposed" if blk.block_state == "unopposed" else "No Block")
+                )
+            )
         )
     )
+    opponent = play.team_side == "opponent"
 
     rows: list[tuple[str, str, tuple[int, int, int]]] = [
         ("Attack Zone", play.attack_zone, (248, 189, 56)),
@@ -70,9 +79,16 @@ def _draw_top_left_hud(img: np.ndarray, play: PlayAnalysis, cal: NetCalibration)
         ("Arm Ext (2D)", f"{hm.arm_extension_deg:.0f} deg" if (hm and hm.arm_extension_deg is not None) else "N/A", (128, 222, 74)),
         ("Torso Tilt", f"{hm.torso_tilt_deg:.0f} deg" if (hm and hm.torso_tilt_deg is not None) else "N/A", (128, 222, 74)),
         ("Jump Timing", hm.jump_timing_label if hm is not None else "N/A", (128, 222, 74)),
-        ("Block Seam", block_val, (133, 113, 251)),
+        ("Our Block" if opponent else "Block Seam", block_val, (133, 113, 251)),
     ]
+    # Hershey fonts are ASCII-only, so no middle dot separator
+    header = f"PLAY #{play.index} - OPPONENT" if opponent else f"PLAY #{play.index} MECHANICS"
+    return header, rows
 
+
+def _draw_top_left_hud(img: np.ndarray, play: PlayAnalysis, cal: NetCalibration) -> None:
+    """Render an always-visible translucent Play Mechanics HUD on the top-left corner."""
+    header, rows = _hud_text(play, cal)
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.44
     line_h = 20
@@ -91,7 +107,7 @@ def _draw_top_left_hud(img: np.ndarray, play: PlayAnalysis, cal: NetCalibration)
     cv2.addWeighted(overlay, 0.82, img, 0.18, 0.0, img)
     cv2.rectangle(img, (x0, y0), (x1, y1), (248, 189, 56), 1, cv2.LINE_AA)
 
-    cv2.putText(img, f"PLAY #{play.index} MECHANICS", (x0 + pad, y0 + pad + 11), font, 0.46, (248, 189, 56), 1, cv2.LINE_AA)
+    cv2.putText(img, header, (x0 + pad, y0 + pad + 11), font, 0.46, (248, 189, 56), 1, cv2.LINE_AA)
     cv2.line(img, (x0 + pad, y0 + pad + header_h - 3), (x1 - pad, y0 + pad + header_h - 3), (71, 85, 105), 1)
 
     for idx, (label, val, col_bgr) in enumerate(rows):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -421,3 +422,66 @@ def test_yolo_predictor_warmup_and_app_startup_preload(tmp_path: Path) -> None:
         assert warmed.wait(timeout=3.0)
         resp = client.get("/api/csrf")
         assert resp.status_code == 200
+
+
+def test_legacy_session_load_mode_toggle_and_side_swap_clears_stale_hitter(
+    synthetic_clip: tuple[Path, dict], tmp_path: Path
+) -> None:
+    clip_path, _gt = synthetic_clip
+    meta = probe_video(clip_path)
+    cal = auto_detect_net_tape([bgr for _i, _t, bgr in iter_video_frames(clip_path, sample_fps=4.0)])
+
+    store = SessionStore(tmp_path / "sessions")
+    sid = "sess_legacy_side"
+    sdir = store.create_session_dir(sid)
+    (sdir / "video_path.txt").write_text(str(clip_path), encoding="utf-8")
+    play, _ = analyse_play_window(clip_path, 1, 0.0, meta.duration_s, cal, SyntheticColorPredictor(), meta, sdir)
+    session = AnalysisSession(
+        session_id=sid,
+        filename=clip_path.name,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        status="ready",
+        progress_pct=100.0,
+        metadata=meta,
+        calibration=cal,
+        plays=[play],
+    )
+    # Legacy-shaped session.json: no session_mode / summary keys
+    legacy = session.model_dump(mode="json")
+    legacy.pop("session_mode")
+    legacy.pop("summary")
+    (sdir / "session.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = store.load_session(sid)
+    assert loaded.session_mode == "drill"
+    assert loaded.summary is not None
+    assert loaded.summary.ours_count == 1
+
+    matched = store.update_session_mode(sid, "match")
+    assert matched.session_mode == "match"
+    assert matched.summary is not None and matched.summary.session_mode == "match"
+    ours_play = matched.plays[0]
+    assert ours_play.team_side == "ours"
+    tracks_by_id = {t.track_id: t for t in ours_play.tracks}
+    assert tracks_by_id[ours_play.hitter_track_id].court_side == "attacking"
+
+    swapped = store.update_play_team_side(sid, play.play_id, "opponent")
+    opp = swapped.plays[0]
+    assert opp.team_side == "opponent"
+    assert opp.team_side_manual is True
+    assert opp.hitter_track_id is not None
+    assert tracks_by_id[opp.hitter_track_id].court_side == "blocking"
+    assert opp.attack_zone.startswith("Opp ")
+    assert swapped.summary is not None
+    assert swapped.summary.ours_count == 0
+    assert swapped.summary.opponent_count == 1
+    assert swapped.summary.ours_all.play_count == 0
+    assert all((sdir / "thumbnails" / km.thumbnail_rel_path).is_file() for km in opp.keyframes)
+
+    # Persisted, and "auto" hands the side back to the classifier
+    assert store.load_session(sid).plays[0].team_side == "opponent"
+    auto = store.update_play_team_side(sid, play.play_id, "auto")
+    assert auto.plays[0].team_side_manual is False
+    assert auto.plays[0].team_side == "ours"
+    assert tracks_by_id[auto.plays[0].hitter_track_id].court_side == "attacking"
+    assert auto.summary is not None and auto.summary.ours_count == 1
