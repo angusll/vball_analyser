@@ -29,6 +29,10 @@ const state = {
   pollTimer: null,
   activeTab: "studio",
   loadModalMode: "studio",
+  teamFilter: "all",
+  sidebarView: "play",
+  summaryTab: "ours",
+  oursSplit: "all",
 };
 
 const els = {
@@ -70,6 +74,12 @@ const els = {
   freezeContactChk: document.getElementById("freezeContactChk"),
   exportMp4Btn: document.getElementById("exportMp4Btn"),
   exportStatus: document.getElementById("exportStatus"),
+  studioModeGroup: document.getElementById("studioModeGroup"),
+  loadSessionModeSelect: document.getElementById("loadSessionModeSelect"),
+  swapPlaySideBtn: document.getElementById("swapPlaySideBtn"),
+  playTeamFilterGroup: document.getElementById("playTeamFilterGroup"),
+  studioSidebarViewGroup: document.getElementById("studioSidebarViewGroup"),
+  sessionSummaryContainer: document.getElementById("sessionSummaryContainer"),
 };
 
 const mediaPlayer = new window.VBallMediaPlayer.MediaPlayer(els.mediaPlayerRoot);
@@ -116,9 +126,30 @@ async function apiPostJson(url, payload) {
   return res.json();
 }
 
+function isTeamFilterAvailable() {
+  const sess = state.session;
+  return Boolean(sess) && (sess.session_mode === "match" || sess.plays.some((p) => p.team_side === "opponent"));
+}
+
+function getVisiblePlays() {
+  if (!state.session) return [];
+  const plays = state.session.plays;
+  if (state.teamFilter === "all" || !isTeamFilterAvailable()) return plays;
+  return plays.filter((p) => (p.team_side || "ours") === state.teamFilter);
+}
+
 function getActivePlay() {
-  if (!state.session || !state.session.plays.length) return null;
-  return state.session.plays.find((p) => p.play_id === state.selectedPlayId) || state.session.plays[0];
+  const plays = getVisiblePlays();
+  if (!plays.length) return null;
+  return plays.find((p) => p.play_id === state.selectedPlayId) || plays[0];
+}
+
+function isOpponentPlay(play) {
+  return Boolean(play) && play.team_side === "opponent";
+}
+
+function offenseCourtSide(play) {
+  return isOpponentPlay(play) ? "blocking" : "attacking";
 }
 
 function formatTime(seconds) {
@@ -155,6 +186,8 @@ function syncControlsDisabledState() {
   els.calibrateNetBtn.disabled = !hasSession;
   els.netHeightSelect.disabled = !hasSession;
   els.reassignHitterBtn.disabled = !hasPlay;
+  els.swapPlaySideBtn.disabled = !hasPlay;
+  for (const btn of els.studioModeGroup.querySelectorAll("[data-session-mode]")) btn.disabled = !hasSession;
   els.rerunDetectionBtn.disabled = !hasSession || isBusy;
   els.addPlayBtn.disabled = !hasSession;
   els.exportMp4Btn.disabled = !hasPlay;
@@ -219,15 +252,39 @@ function getPlayMechanicsRows(play) {
         ? formatHeightCm(hm.contact_height_cm, netHeightM)
         : `${hm.contact_height_px >= 0 ? "+" : ""}${hm.contact_height_px.toFixed(0)} px`)
     : "N/A";
+  const isOpp = isOpponentPlay(play);
+  // Blocker geometry first so legacy plays (block_state defaulted) still read correctly
   const blockVal = blk.seam_open
     ? (blk.seam_gap_cm !== null ? `Open (${blk.seam_gap_cm.toFixed(0)} cm)` : "Open")
-    : (blk.blockers.length >= 2 ? "Closed" : (blk.blockers.length === 1 ? "Single Block" : "No Block"));
+    : (blk.blockers.length >= 2 ? "Closed" : (blk.blockers.length === 1 ? "Single Block"
+      : (blk.block_state === "zero_block" ? "No Block" : "Unopposed")));
+  const sideVal = isOpp
+    ? "Opponent"
+    : (play.system_state === "in_system" ? "Ours · In-System"
+      : (play.system_state === "out_of_system" ? "Ours · Out-of-System" : "Ours"));
+  const farNote = isOpp ? "Far-court est." : null;
 
   return [
     {
       label: "Attack Zone",
       value: play.attack_zone,
       desc: "Net section where the hit occurs (Zone 4 Left, Zone 3 Middle, Zone 2 Right).",
+      color: "#38bdf8",
+      accentClass: "accent-cyan",
+    },
+    {
+      label: "System / Side",
+      value: sideVal,
+      desc: "Whose set this is (near court = ours) and, for our sets, whether the setter released in-system.",
+      color: isOpp ? "#fbbf24" : "#38bdf8",
+      accentClass: isOpp ? "accent-gold" : "accent-cyan",
+    },
+    {
+      label: "Pin Distance",
+      value: play.pin_distance_m !== null && play.pin_distance_m !== undefined
+        ? `${play.pin_distance_m.toFixed(2)} m from antenna`
+        : "N/A",
+      desc: "Distance of the contact inside the nearest antenna on pin sets (Zone 4 / Zone 2).",
       color: "#38bdf8",
       accentClass: "accent-cyan",
     },
@@ -259,6 +316,7 @@ function getPlayMechanicsRows(play) {
       desc: "Shoulder-elbow-wrist angle at contact in the camera plane (closer to 180° = fuller reach).",
       color: "#4ade80",
       accentClass: "accent-green",
+      note: farNote,
     },
     {
       label: "Torso Tilt (2D)",
@@ -266,6 +324,7 @@ function getPlayMechanicsRows(play) {
       desc: "Upper-body lean/arch from vertical at contact in the camera plane.",
       color: "#4ade80",
       accentClass: "accent-green",
+      note: farNote,
     },
     {
       label: "Jump Timing",
@@ -275,9 +334,11 @@ function getPlayMechanicsRows(play) {
       accentClass: "accent-green",
     },
     {
-      label: "Block Seam",
+      label: isOpp ? "Our Block" : "Block Seam",
       value: blockVal,
-      desc: "Spacing between opposing blockers' hands above the net at contact.",
+      desc: isOpp
+        ? "Spacing between our blockers' hands above the net at the opponent's contact."
+        : "Spacing between opposing blockers' hands above the net at contact.",
       color: "#fb7185",
       accentClass: "accent-rose",
     },
@@ -350,7 +411,7 @@ function drawTopLeftMechanicsHud(ctx, play) {
   ctx.font = "600 10.5px system-ui, sans-serif";
   ctx.fillStyle = "#f3f4f6";
   ctx.textAlign = "left";
-  ctx.fillText(`PLAY #${play.index}`, x + padX, y + padY + 10);
+  ctx.fillText(`PLAY #${play.index}${isOpponentPlay(play) ? " · OPPONENT" : ""}`, x + padX, y + padY + 10);
 
   ctx.font = "500 10px ui-monospace, monospace";
   ctx.fillStyle = "#848b98";
@@ -411,7 +472,7 @@ function findNearestAttackingTrackId(play, pt, frameIdx) {
   let bestId = null;
   let bestDist = 140;
   for (const track of play.tracks) {
-    if (track.court_side !== "attacking") continue;
+    if (track.court_side !== offenseCourtSide(play)) continue;
     const pf = track.frames.find((f) => Math.abs(f.frame_idx - frameIdx) <= 2);
     if (!pf) continue;
     const cx = (pf.bbox[0] + pf.bbox[2]) / 2;
@@ -451,7 +512,8 @@ function renderStudioTimeline(ctx, player, layout) {
     const x1 = pad + Math.max(0, Math.min(1, play.end_time_s / duration)) * usableW;
     const w = Math.max(4, x1 - x0);
     const isSel = activePlay && play.play_id === activePlay.play_id;
-    ctx.fillStyle = isSel ? "rgba(56, 189, 248, 0.42)" : "rgba(56, 189, 248, 0.18)";
+    const rgb = isOpponentPlay(play) ? "251, 191, 36" : "56, 189, 248";
+    ctx.fillStyle = `rgba(${rgb}, ${isSel ? 0.42 : 0.18})`;
     ctx.beginPath();
     ctx.roundRect(x0, trackY - (isSel ? 2 : 0), w, trackH + (isSel ? 4 : 0), 3);
     ctx.fill();
@@ -600,7 +662,7 @@ function renderStudioOverlay(ctx, player, frameIdx) {
       const isHitter = track.track_id === play.hitter_track_id;
       const isHovered = state.reassigningHitter && track.track_id === state.hoverTrackId;
       if (!isHitter && !state.reassigningHitter) continue;
-      if (state.reassigningHitter && track.court_side !== "attacking") continue;
+      if (state.reassigningHitter && track.court_side !== offenseCourtSide(play)) continue;
       const pf = track.frames.find((f) => Math.abs(f.frame_idx - frameIdx) <= 2);
       if (!pf) continue;
 
@@ -858,6 +920,13 @@ function renderMetrics(play) {
     const valWrap = document.createElement("div");
     valWrap.className = "metric-val-wrap";
 
+    if (row.note) {
+      const note = document.createElement("span");
+      note.className = "metric-note";
+      note.textContent = `(${row.note})`;
+      valWrap.appendChild(note);
+    }
+
     if (row.isApprox) {
       const approx = document.createElement("span");
       approx.className = "approx-badge";
@@ -894,8 +963,18 @@ function renderPlaysList() {
     return;
   }
 
-  for (const play of state.session.plays) {
-    const isActive = play.play_id === state.selectedPlayId;
+  const plays = getVisiblePlays();
+  if (!plays.length) {
+    const empty = document.createElement("div");
+    empty.className = "plays-empty";
+    empty.textContent = "No plays match this team filter.";
+    els.playsList.appendChild(empty);
+    return;
+  }
+
+  const activePlay = getActivePlay();
+  for (const play of plays) {
+    const isActive = play === activePlay;
     const item = document.createElement("div");
     item.className = "play-item" + (isActive ? " active" : "");
     item.setAttribute("role", "listitem");
@@ -927,6 +1006,18 @@ function renderPlaysList() {
     zoneChip.className = "zone-chip";
     zoneChip.textContent = play.attack_zone;
     sub.appendChild(zoneChip);
+
+    const sideChip = document.createElement("span");
+    sideChip.className = isOpponentPlay(play) ? "side-badge side-opp" : "side-badge side-ours";
+    sideChip.textContent = isOpponentPlay(play) ? "Opp" : "Ours";
+    sub.appendChild(sideChip);
+
+    if (state.session.session_mode === "match" && play.system_state) {
+      const sysChip = document.createElement("span");
+      sysChip.className = "side-badge side-sys";
+      sysChip.textContent = play.system_state === "in_system" ? "In-Sys" : "OOS";
+      sub.appendChild(sysChip);
+    }
 
     const metaParts = [];
     if (play.set_trajectory) {
@@ -990,6 +1081,172 @@ function selectPlay(playId, seekToStart) {
   }
 }
 
+function setGroupActive(group, attr, value) {
+  for (const btn of group.querySelectorAll(`[${attr}]`)) {
+    const on = btn.getAttribute(attr) === value;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", String(on));
+  }
+}
+
+function syncStudioAnalyticsControls() {
+  setGroupActive(els.studioModeGroup, "data-session-mode", state.session ? state.session.session_mode || "drill" : "drill");
+  els.playTeamFilterGroup.classList.toggle("hidden", !isTeamFilterAvailable());
+  setGroupActive(els.playTeamFilterGroup, "data-team-filter", state.teamFilter);
+  setGroupActive(els.studioSidebarViewGroup, "data-sidebar-view", state.sidebarView);
+  els.metricsList.classList.toggle("hidden", state.sidebarView !== "play");
+  els.sessionSummaryContainer.classList.toggle("hidden", state.sidebarView !== "session");
+}
+
+function fmtMeanStd(mean, std, digits, unit, signed = false) {
+  if (mean === null || mean === undefined) return "—";
+  const sign = signed && mean >= 0 ? "+" : "";
+  const sd = std === null || std === undefined ? "" : ` ± ${std.toFixed(digits)}`;
+  return `${sign}${mean.toFixed(digits)}${sd} ${unit}`;
+}
+
+function fmtPct(v) {
+  return v === null || v === undefined ? "—" : `${Math.round(v)}%`;
+}
+
+function summaryKpiGrid(kpis) {
+  const grid = document.createElement("div");
+  grid.className = "serve-kpi-grid";
+  for (const k of kpis) {
+    const card = document.createElement("div");
+    card.className = "serve-kpi-card";
+    const lbl = document.createElement("span");
+    lbl.className = "serve-kpi-label";
+    lbl.textContent = k.label;
+    const val = document.createElement("span");
+    val.className = `serve-kpi-value ${k.cls}`;
+    val.textContent = k.value;
+    card.appendChild(lbl);
+    card.appendChild(val);
+    grid.appendChild(card);
+  }
+  return grid;
+}
+
+function setWindowTable(zones) {
+  const table = document.createElement("table");
+  table.className = "set-window-table";
+  const caption = document.createElement("caption");
+  caption.textContent = "Set Window";
+  table.appendChild(caption);
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const h of ["Zone", "Reps", "Tempo", "Peak", "Pin"]) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = h;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const z of zones) {
+    const tr = document.createElement("tr");
+    const cells = [
+      z.zone.replace(/Zone (\d).*/, "Z$1"),
+      `${z.count} (${Math.round(z.pct)}%)`,
+      fmtMeanStd(z.tempo_mean_s, z.tempo_std_s, 2, "s"),
+      fmtMeanStd(z.peak_height_mean_cm, z.peak_height_std_cm, 0, "cm", true),
+      fmtMeanStd(z.pin_distance_mean_m, z.pin_distance_std_m, 2, "m"),
+    ];
+    cells.forEach((text, idx) => {
+      const td = document.createElement(idx === 0 ? "th" : "td");
+      if (idx === 0) td.scope = "row";
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+function summaryPills(attr, options, current) {
+  const group = document.createElement("div");
+  group.className = "serve-mode-switcher summary-pills";
+  group.setAttribute("role", "group");
+  for (const [value, label] of options) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "serve-mode-btn";
+    btn.classList.toggle("active", value === current);
+    btn.setAttribute(attr, value);
+    btn.setAttribute("aria-pressed", String(value === current));
+    btn.textContent = label;
+    btn.addEventListener("click", () => {
+      if (attr === "data-summary-tab") state.summaryTab = value;
+      else state.oursSplit = value;
+      renderSessionSummary();
+      // The pill was rebuilt; keep keyboard focus on its replacement
+      const again = els.sessionSummaryContainer.querySelector(`[${attr}="${value}"]`);
+      if (again) again.focus();
+    });
+    group.appendChild(btn);
+  }
+  return group;
+}
+
+function isolationText(bs) {
+  return bs.isolation_pct === null || bs.isolation_pct === undefined ? "Unopposed" : fmtPct(bs.isolation_pct);
+}
+
+function renderSessionSummary() {
+  const box = els.sessionSummaryContainer;
+  box.replaceChildren();
+  if (state.sidebarView !== "session") return;
+  const sum = state.session ? state.session.summary : null;
+  if (!sum) {
+    const empty = document.createElement("div");
+    empty.className = "plays-empty";
+    empty.textContent = state.session ? "No session summary yet." : "Load a video to see the session summary.";
+    box.appendChild(empty);
+    return;
+  }
+
+  if (state.session.session_mode !== "match") {
+    box.appendChild(summaryKpiGrid([
+      { label: "Our Reps", value: String(sum.ours_count), cls: "accent-cyan" },
+      { label: "Setter Isolation", value: isolationText(sum.ours_all.block_stats), cls: "accent-green" },
+    ]));
+    box.appendChild(setWindowTable(sum.ours_all.zones));
+    return;
+  }
+
+  box.appendChild(summaryPills("data-summary-tab", [["ours", "Our Offense"], ["opponent", "Opponent / Our Block"]], state.summaryTab));
+  if (state.summaryTab === "opponent") {
+    const opp = sum.opponent;
+    box.appendChild(summaryKpiGrid([
+      { label: "Opponent Sets", value: String(sum.opponent_count), cls: "accent-gold" },
+      { label: "Our Block Closure", value: fmtPct(opp.block_stats.closed_block_pct), cls: "accent-rose" },
+      { label: "Our Open Seam Avg", value: fmtMeanStd(opp.block_stats.avg_open_seam_cm, null, 0, "cm"), cls: "accent-rose" },
+      { label: "Back-Row %", value: fmtPct(opp.back_row_pct), cls: "accent-purple" },
+    ]));
+    box.appendChild(setWindowTable(opp.zones));
+    return;
+  }
+
+  box.appendChild(summaryPills("data-ours-split", [["all", "All"], ["in_system", "In-System"], ["out_of_system", "Out-of-Sys"]], state.oursSplit));
+  const bucket = state.oursSplit === "in_system" ? sum.ours_in_system
+    : (state.oursSplit === "out_of_system" ? sum.ours_out_of_system : sum.ours_all);
+  const bs = bucket.block_stats;
+  box.appendChild(summaryKpiGrid([
+    { label: "In-System %", value: fmtPct(sum.in_system_pct), cls: "accent-cyan" },
+    {
+      label: "Setter Isolation % (0 / 1 / Open Seam)",
+      value: `${isolationText(bs)} (${bs.zero_block_count}/${bs.single_block_count}/${bs.open_seam_count})`,
+      cls: "accent-green",
+    },
+    { label: "Avg Open Seam", value: fmtMeanStd(bs.avg_open_seam_cm, null, 0, "cm"), cls: "accent-rose" },
+    { label: "Back-Row %", value: fmtPct(bucket.back_row_pct), cls: "accent-purple" },
+  ]));
+  box.appendChild(setWindowTable(bucket.zones));
+}
+
 function updateStatusPill(sess) {
   els.statusBadge.className = "status-pill";
   if (!sess) {
@@ -1029,6 +1286,7 @@ function applySession(sess, resetVideoSrc) {
       mediaPlayer.loadSession(sess, { resetTime: Boolean(resetVideoSrc && prevId !== sess.session_id) });
     }
     state.selectedPlayId = sess.plays.length ? sess.plays[0].play_id : null;
+    state.teamFilter = "all";
     els.exportStatus.classList.remove("is-error");
     els.exportStatus.textContent = "";
   } else {
@@ -1043,9 +1301,11 @@ function applySession(sess, resetVideoSrc) {
   }
 
   const activePlay = getActivePlay();
+  syncStudioAnalyticsControls();
   renderPlaysList();
   renderKeyframes(activePlay);
   renderMetrics(activePlay);
+  renderSessionSummary();
   syncControlsDisabledState();
   if (studioActive) {
     renderOverlay();
@@ -1160,6 +1420,7 @@ async function submitVideoFile(file) {
     formData.append("file", file);
     formData.append("net_height_m", els.netHeightSelect.value);
     if (isServeMode) formData.append("skip_analysis", "true");
+    else formData.append("session_mode", els.loadSessionModeSelect.value);
     const res = await fetch("/api/sessions/upload", {
       method: "POST",
       credentials: "same-origin",
@@ -1197,6 +1458,7 @@ function setupEventListeners() {
     els.loadError.textContent = "";
     els.uploadSubmitBtn.textContent = mode === "serve" ? "Upload Video" : "Upload & Analyse";
     els.localSubmitBtn.textContent = mode === "serve" ? "Load Local Video" : "Analyse Local File";
+    els.loadSessionModeSelect.parentElement.classList.toggle("hidden", mode === "serve");
     els.loadDialog.showModal();
   };
   els.openLoadBtn.addEventListener("click", () => openModal("studio"));
@@ -1423,6 +1685,7 @@ function setupEventListeners() {
         path: rawPath,
         net_height_m: parseFloat(els.netHeightSelect.value),
         skip_analysis: isServeMode,
+        ...(isServeMode ? {} : { session_mode: els.loadSessionModeSelect.value }),
       });
       els.loadDialog.close();
       if (isServeMode && window.VBallServeTab && typeof window.VBallServeTab.onVideoLoaded === "function") {
@@ -1467,6 +1730,64 @@ function setupEventListeners() {
     if (!getActivePlay()) return;
     setInteractiveMode(false, !state.reassigningHitter);
   });
+
+  for (const btn of els.studioModeGroup.querySelectorAll("[data-session-mode]")) {
+    btn.addEventListener("click", async () => {
+      const mode = btn.getAttribute("data-session-mode");
+      if (!state.session || state.session.session_mode === mode) return;
+      try {
+        const updated = await apiPostJson(
+          `/api/sessions/${encodeURIComponent(state.session.session_id)}/mode`,
+          { session_mode: mode }
+        );
+        applySession(updated, false);
+      } catch (err) {
+        els.exportStatus.classList.add("is-error");
+        els.exportStatus.textContent = err.message;
+      }
+    });
+  }
+
+  els.swapPlaySideBtn.addEventListener("click", async () => {
+    const play = getActivePlay();
+    if (!state.session || !play) return;
+    const hadFocus = document.activeElement === els.swapPlaySideBtn;
+    els.swapPlaySideBtn.disabled = true;
+    try {
+      const updated = await apiPostJson(
+        `/api/sessions/${encodeURIComponent(state.session.session_id)}/plays/${encodeURIComponent(play.play_id)}/side`,
+        { team_side: isOpponentPlay(play) ? "ours" : "opponent" }
+      );
+      // Keep the swapped play selected even if the active team filter would now hide it
+      state.teamFilter = "all";
+      state.selectedPlayId = play.play_id;
+      applySession(updated, false);
+    } catch (err) {
+      els.exportStatus.classList.add("is-error");
+      els.exportStatus.textContent = err.message;
+    } finally {
+      syncControlsDisabledState();
+      if (hadFocus) els.swapPlaySideBtn.focus();
+    }
+  });
+
+  for (const btn of els.playTeamFilterGroup.querySelectorAll("[data-team-filter]")) {
+    btn.addEventListener("click", () => {
+      state.teamFilter = btn.getAttribute("data-team-filter");
+      syncStudioAnalyticsControls();
+      const play = getActivePlay();
+      const changed = Boolean(play) && play.play_id !== state.selectedPlayId;
+      selectPlay(play ? play.play_id : null, changed);
+    });
+  }
+
+  for (const btn of els.studioSidebarViewGroup.querySelectorAll("[data-sidebar-view]")) {
+    btn.addEventListener("click", () => {
+      state.sidebarView = btn.getAttribute("data-sidebar-view");
+      syncStudioAnalyticsControls();
+      renderSessionSummary();
+    });
+  }
 
   els.rerunDetectionBtn.addEventListener("click", async () => {
     if (!state.session) return;

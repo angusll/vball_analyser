@@ -2388,6 +2388,97 @@ body {
   }
 }
 
+/* Studio Analytics: Drill | Match, Ours | Opp, Play | Session */
+.team-filter-group,
+.summary-pills {
+  align-self: flex-start;
+}
+
+.side-badge {
+  padding: 0.04rem 0.32rem;
+  border-radius: 3px;
+  font-size: 0.64rem;
+  font-weight: 650;
+  border: 1px solid transparent;
+}
+
+.side-badge.side-ours {
+  background: var(--cyan-soft);
+  color: var(--cyan);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.side-badge.side-opp {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.side-badge.side-sys {
+  background: var(--bg-2);
+  color: var(--text-2);
+  border-color: var(--border-subtle);
+}
+
+.metric-note {
+  font-size: 0.64rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.session-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.set-window-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.set-window-table caption {
+  text-align: left;
+  padding-bottom: 0.3rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.set-window-table th,
+.set-window-table td {
+  padding: 0.3rem 0.2rem;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.set-window-table thead th {
+  font-size: 0.64rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.set-window-table th[scope="row"],
+.set-window-table thead th:first-child {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.set-window-table td {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+
+.set-window-table tbody tr:last-child > * {
+  border-bottom: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
