@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +18,7 @@ from vball_analyser.models import (
     PoseFrame,
     VideoMetadata,
 )
-from vball_analyser.serve_detector import detect_serve_events, extract_foot_point
+from vball_analyser.serve_detector import PRE_SERVE_OFFSET_S, detect_serve_events, extract_foot_point
 from vball_analyser.serve_geometry import compute_court_homography, project_court_to_image
 
 
@@ -679,3 +680,112 @@ def test_continuous_long_rally_beyond_cooldown_does_not_double_record(tmp_path: 
     events = detect_serve_events(video_path, cal, FakeServePredictor(balls, tracks), meta)
     assert len(events) == 1
     assert events[0].timestamp_s is not None and abs(events[0].timestamp_s - 1.6) < 0.25
+
+
+def _build_movement_scenario(
+    tmp_path: Path,
+    filename: str,
+    *,
+    p2_first_t: float,
+    move_start_t: float,
+    ball_dx_px: float,
+) -> tuple[Path, CourtCalibration, FakeServePredictor, VideoMetadata]:
+    """P2 stands at (4.5, 6.5), moves from move_start_t to receive at (3.1, 5.3) at t_land=2.2s (frame 33)."""
+    video_path = tmp_path / filename
+    fps = 15.0
+    duration_s = 6.5
+    make_synthetic_baseline_video(video_path, duration_s=duration_s, fps=int(fps))
+    cal = _test_calibration()
+    _H, H_inv = compute_court_homography(cal)
+
+    p1_px = project_court_to_image(H_inv, 1.8, 6.2)
+    p2_pre_px = project_court_to_image(H_inv, 4.5, 6.5)
+    p2_recv_px = project_court_to_image(H_inv, 3.1, 5.3)
+    p3_px = project_court_to_image(H_inv, 7.2, 6.2)
+
+    n_frames = int(fps * duration_s)
+    recv_frame = 33
+    recv_t = recv_frame / fps
+    recv_bx = p2_recv_px[0] + ball_dx_px
+    recv_by = p2_recv_px[1] - 75.0
+    p1_frames: list[PoseFrame] = []
+    p2_frames: list[PoseFrame] = []
+    p3_frames: list[PoseFrame] = []
+    balls: list[BallDetection] = []
+    for i in range(n_frames):
+        ts = round(i / fps, 4)
+        p1_frames.append(_make_pose_frame(i, ts, p1_px[0], p1_px[1]))
+        p3_frames.append(_make_pose_frame(i, ts, p3_px[0], p3_px[1]))
+        if ts >= p2_first_t - 1e-6:
+            alpha = min(1.0, max(0.0, (ts - move_start_t) / (recv_t - move_start_t)))
+            fx = p2_pre_px[0] + alpha * (p2_recv_px[0] - p2_pre_px[0])
+            fy = p2_pre_px[1] + alpha * (p2_recv_px[1] - p2_pre_px[1])
+            pf = _make_pose_frame(i, ts, fx, fy)
+            # Shoulders 40px apart -> midline half-width 0.65 * 40 = 26px around torso center
+            pf.keypoints[5] = (fx - 20.0, fy - 120.0, 0.9)
+            pf.keypoints[6] = (fx + 20.0, fy - 120.0, 0.9)
+            p2_frames.append(pf)
+
+        if 15 <= i <= recv_frame:
+            u = (i - 15) / (recv_frame - 15)
+            balls.append(BallDetection(frame_idx=i, timestamp_s=ts, x=520.0 + u * (recv_bx - 520.0), y=150.0 + u * (recv_by - 150.0), conf=0.9))
+        elif recv_frame < i <= 45:
+            u = (i - recv_frame) / (45 - recv_frame)
+            balls.append(BallDetection(frame_idx=i, timestamp_s=ts, x=recv_bx + u * 80.0, y=recv_by - u * 160.0, conf=0.9))
+
+    tracks = [
+        PlayerTrack(track_id=1, court_side="attacking", frames=p1_frames),
+        PlayerTrack(track_id=2, court_side="attacking", frames=p2_frames),
+        PlayerTrack(track_id=3, court_side="attacking", frames=p3_frames),
+    ]
+    meta = VideoMetadata(width=1056, height=576, fps=fps, frame_count=n_frames, duration_s=duration_s, codec="h264")
+    return video_path, cal, FakeServePredictor(balls, tracks), meta
+
+
+def test_pre_serve_140ms_lookback_movement_vector_and_body_alignment(tmp_path: Path) -> None:
+    assert PRE_SERVE_OFFSET_S == pytest.approx(1.40)
+    video_path, cal, predictor, meta = _build_movement_scenario(
+        tmp_path, "movement.mp4", p2_first_t=0.0, move_start_t=1.3, ball_dx_px=45.0
+    )
+    events = detect_serve_events(video_path, cal, predictor, meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.result == "in"
+    # Receive foot (3.1, 5.3) is nearer P1's stance (1.8, 6.2) than P2's, so only direct track attribution yields P2/Mid
+    assert ev.passer_label == "P2"
+    assert ev.slot_label == "Mid"
+    assert ev.pre_passer_x_m == pytest.approx(4.5, abs=0.15)
+    assert ev.pre_passer_y_m == pytest.approx(6.5, abs=0.15)
+    assert ev.recv_foot_x_m == pytest.approx(3.1, abs=0.15)
+    assert ev.recv_foot_y_m == pytest.approx(5.3, abs=0.15)
+    assert ev.move_distance_m == pytest.approx(math.hypot(-1.4, -1.2), abs=0.2)
+    assert ev.move_dx_m is not None and ev.move_dx_m < -1.0
+    assert ev.move_dy_m is not None and ev.move_dy_m < -1.0
+    assert ev.contact_alignment == "outside"
+
+
+def test_late_entering_receiver_track_fallback_and_unmeasured_short_track(tmp_path: Path) -> None:
+    # (a) Track enters at t_land - 0.80s, before it starts moving: its earliest frame is the stance
+    video_path, cal, predictor, meta = _build_movement_scenario(
+        tmp_path, "late_a.mp4", p2_first_t=1.4, move_start_t=1.6, ball_dx_px=0.0
+    )
+    events = detect_serve_events(video_path, cal, predictor, meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.pre_passer_x_m == pytest.approx(4.5, abs=0.15)
+    assert ev.move_distance_m == pytest.approx(math.hypot(-1.4, -1.2), abs=0.2)
+    assert ev.contact_alignment == "midline"
+
+    # (b) Track enters only at t_land - 0.20s (< 0.45s): movement is unmeasured, never 0.0
+    video_path, cal, predictor, meta = _build_movement_scenario(
+        tmp_path, "late_b.mp4", p2_first_t=2.0, move_start_t=1.6, ball_dx_px=0.0
+    )
+    events = detect_serve_events(video_path, cal, predictor, meta)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.result == "in"
+    assert ev.recv_foot_x_m is not None
+    assert ev.pre_passer_x_m is None
+    assert ev.move_dx_m is None and ev.move_dy_m is None
+    assert ev.move_distance_m is None
+    assert ev.slot_label is not None
