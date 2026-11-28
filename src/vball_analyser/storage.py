@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -23,6 +26,17 @@ def validate_safe_id(value: str) -> str:
     return value
 
 
+def _locked(method):  # noqa: ANN001, ANN202
+    """Run a SessionStore read-modify-write under the per-session lock (first arg is session_id)."""
+
+    @functools.wraps(method)
+    def wrapper(self, session_id, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        with self.session_lock(session_id):
+            return method(self, session_id, *args, **kwargs)
+
+    return wrapper
+
+
 class SessionStore:
     """Stores analysis sessions, raw ball caches, and exports inside data/sessions/<id>."""
 
@@ -33,6 +47,22 @@ class SessionStore:
             os.chmod(self.sessions_dir, 0o700)
         except OSError:
             pass
+        # Background analysis (worker thread) and user edits both load -> mutate -> save session.json
+        self._locks: dict[str, threading.RLock] = {}
+        self._locks_guard = threading.Lock()
+
+    def session_lock(self, session_id: str) -> threading.RLock:
+        safe_id = validate_safe_id(session_id)
+        with self._locks_guard:
+            return self._locks.setdefault(safe_id, threading.RLock())
+
+    def mutate_session(self, session_id: str, apply: Callable[[AnalysisSession], None]) -> AnalysisSession:
+        """Atomically load the latest session, apply an in-place change, and save it."""
+        with self.session_lock(session_id):
+            session = self.load_session(session_id)
+            apply(session)
+            self.save_session(session)
+            return session
 
     def session_dir(self, session_id: str) -> Path:
         safe_id = validate_safe_id(session_id)
@@ -119,6 +149,7 @@ class SessionStore:
                 return resolved
         raise FileNotFoundError(f"Playable video missing for session {session_id}")
 
+    @_locked
     def recalibrate_session_net(
         self,
         session_id: str,
@@ -222,6 +253,7 @@ class SessionStore:
             zone_x = 0.5 * (cal.left_point.x + cal.right_point.x)
         play.attack_zone = classify_attack_zone(cal, zone_x, team_side=team_side)
 
+    @_locked
     def update_session_mode(self, session_id: str, session_mode: Literal["drill", "match"]) -> AnalysisSession:
         """Switch Drill/Match and re-evaluate auto sides, block states, and summary from cached tracks."""
         session = self.load_session(session_id)
@@ -232,6 +264,7 @@ class SessionStore:
         self.save_session(session)
         return session
 
+    @_locked
     def update_play_team_side(
         self, session_id: str, play_id: str, team_side: Literal["ours", "opponent", "auto"]
     ) -> AnalysisSession:
@@ -251,6 +284,7 @@ class SessionStore:
         self.save_session(session)
         return session
 
+    @_locked
     def reassign_play_hitter(self, session_id: str, play_id: str, track_id: int) -> AnalysisSession:
         """Swap active hitter to another cached track ID without re-running GPU detection."""
         session = self.load_session(session_id)
@@ -273,6 +307,7 @@ class SessionStore:
         self.save_session(session)
         return session
 
+    @_locked
     def delete_play(self, session_id: str, play_id: str) -> AnalysisSession:
         session = self.load_session(session_id)
         before = len(session.plays)

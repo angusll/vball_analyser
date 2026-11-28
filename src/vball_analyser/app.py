@@ -261,26 +261,39 @@ def create_app(
 
     async def _run_session_analysis(session_id: str, source_path: Path) -> None:
         sdir = store.session_dir(session_id)
+
+        def _set_fields(**fields: object) -> AnalysisSession:
+            # Never save a session object held across an await: user edits may have landed meanwhile
+            def _apply(s: AnalysisSession) -> None:
+                for name, value in fields.items():
+                    setattr(s, name, value)
+
+            return store.mutate_session(session_id, _apply)
+
         try:
-            session = store.load_session(session_id)
-            session.status = "scanning"
-            session.progress_pct = 8.0
-            store.save_session(session)
+            session = _set_fields(status="scanning", progress_pct=8.0)
 
             web_mp4 = await asyncio.to_thread(ensure_web_playable_mp4, source_path, sdir)
+            metadata = session.metadata
             if web_mp4 != source_path:
-                session.metadata = await asyncio.to_thread(probe_video, web_mp4)
+                metadata = await asyncio.to_thread(probe_video, web_mp4)
 
+            detected_cal = None
             if not session.calibration.is_manual:
                 sample_frames = await asyncio.to_thread(
-                    lambda: [bgr for _i, _t, bgr in iter_video_frames(web_mp4, start_s=0.0, end_s=min(8.0, session.metadata.duration_s), sample_fps=2.0)]
+                    lambda: [bgr for _i, _t, bgr in iter_video_frames(web_mp4, start_s=0.0, end_s=min(8.0, metadata.duration_s), sample_fps=2.0)]
                 )
                 detected_cal = await asyncio.to_thread(auto_detect_net_tape, sample_frames)
-                detected_cal.net_height_m = session.calibration.net_height_m
-                session.calibration = detected_cal
 
-            session.progress_pct = 25.0
-            store.save_session(session)
+            def _apply_probe(s: AnalysisSession) -> None:
+                s.metadata = metadata
+                # Keep a calibration the user set by hand while auto-detection was running
+                if detected_cal is not None and not s.calibration.is_manual:
+                    detected_cal.net_height_m = s.calibration.net_height_m
+                    s.calibration = detected_cal
+                s.progress_pct = 25.0
+
+            session = store.mutate_session(session_id, _apply_probe)
 
             async with gpu_lock:
                 windows = await asyncio.to_thread(
@@ -289,20 +302,18 @@ def create_app(
                 if not windows:
                     windows = [(0.0, min(session.metadata.duration_s, 6.0))]
 
-                session.status = "analysing"
-                session.progress_pct = 35.0
-                store.save_session(session)
-
-                # Re-read calibration/mode in case the user adjusted them while scanning
-                latest = store.load_session(session_id)
+                # Returns the latest calibration/mode in case the user adjusted them while scanning
+                latest = _set_fields(status="analysing", progress_pct=35.0)
 
                 def _on_play_ready(idx: int, total: int, play, raw_balls) -> None:  # noqa: ANN001
                     # Runs in the worker thread; persist each play as soon as it is ready
                     store.save_play_ball_cache(session_id, play.play_id, raw_balls)
-                    current = store.load_session(session_id)
-                    current.plays.append(play)
-                    current.progress_pct = round(35.0 + 65.0 * (idx / max(1, total)), 1)
-                    store.save_session(current)
+
+                    def _append(s: AnalysisSession) -> None:
+                        s.plays.append(play)
+                        s.progress_pct = round(35.0 + 65.0 * (idx / max(1, total)), 1)
+
+                    store.mutate_session(session_id, _append)
 
                 await asyncio.to_thread(
                     analyse_play_windows_shared,
@@ -316,19 +327,13 @@ def create_app(
                     on_play_ready=_on_play_ready,
                 )
 
-            final_sess = store.load_session(session_id)
-            final_sess.status = "ready"
-            final_sess.progress_pct = 100.0
-            store.save_session(final_sess)
+            _set_fields(status="ready", progress_pct=100.0)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Analysis pipeline failed for session %s", session_id)
             try:
-                err_sess = store.load_session(session_id)
-                err_sess.status = "error"
-                err_sess.error_message = "Video analysis failed. Check server logs for details."
-                store.save_session(err_sess)
+                _set_fields(status="error", error_message="Video analysis failed. Check server logs for details.")
             except Exception:
                 pass
 
@@ -649,11 +654,15 @@ def create_app(
                 session_mode=session.session_mode,
             )
         store.save_play_ball_cache(session_id, play.play_id, raw_balls)
-        session.plays.append(play)
-        session.plays.sort(key=lambda p: p.start_time_s)
-        for idx, p in enumerate(session.plays, start=1):
-            p.index = idx
-        store.save_session(session)
+
+        def _insert_play(s: AnalysisSession) -> None:
+            s.plays.append(play)
+            s.plays.sort(key=lambda p: p.start_time_s)
+            for idx, p in enumerate(s.plays, start=1):
+                p.index = idx
+
+        # The GPU await above can span edits and analysis callbacks; apply to the latest session
+        session = store.mutate_session(session_id, _insert_play)
         return JSONResponse(session.model_dump())
 
     @app.post("/api/sessions/{session_id}/plays/{play_id}/hitter")

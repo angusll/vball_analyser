@@ -485,3 +485,53 @@ def test_legacy_session_load_mode_toggle_and_side_swap_clears_stale_hitter(
     assert auto.plays[0].team_side == "ours"
     assert tracks_by_id[auto.plays[0].hitter_track_id].court_side == "attacking"
     assert auto.summary is not None and auto.summary.ours_count == 1
+
+
+def test_concurrent_analysis_write_and_mode_update_do_not_lose_changes(tmp_path: Path) -> None:
+    """A background-analysis save that lands mid user edit must not be clobbered (or clobber it)."""
+    import threading
+    import time
+
+    from vball_analyser.models import NetCalibration, VideoMetadata
+
+    store = SessionStore(tmp_path / "sessions")
+    sid = "sess_race"
+    store.save_session(
+        AnalysisSession(
+            session_id=sid,
+            filename="clip.mp4",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            status="analysing",
+            progress_pct=35.0,
+            metadata=VideoMetadata(width=1280, height=720, fps=30.0, frame_count=300, duration_s=10.0, codec="h264"),
+            calibration=NetCalibration(left_point=Point2D(x=100, y=300), right_point=Point2D(x=1180, y=300)),
+        )
+    )
+
+    # Pause update_session_mode between its load and its save
+    in_edit, release = threading.Event(), threading.Event()
+    original_video_or_none = store._video_or_none
+
+    def _paused_video_or_none(session_id: str):  # noqa: ANN202
+        in_edit.set()
+        release.wait(timeout=5.0)
+        return original_video_or_none(session_id)
+
+    store._video_or_none = _paused_video_or_none  # type: ignore[method-assign]
+
+    def _analysis_progress(s: AnalysisSession) -> None:
+        s.progress_pct = 70.0
+
+    user = threading.Thread(target=store.update_session_mode, args=(sid, "match"))
+    analysis = threading.Thread(target=store.mutate_session, args=(sid, _analysis_progress))
+    user.start()
+    assert in_edit.wait(timeout=5.0)
+    analysis.start()
+    time.sleep(0.2)  # give the analysis write every chance to interleave
+    release.set()
+    user.join(timeout=5.0)
+    analysis.join(timeout=5.0)
+
+    final = store.load_session(sid)
+    assert final.session_mode == "match"
+    assert final.progress_pct == 70.0
