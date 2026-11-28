@@ -1,11 +1,10 @@
 name: CI
 
 on:
+  # Feature branches get CI through their pull_request run only; pushing them too ran every PR commit twice
   push:
     branches:
       - main
-      - "feat/**"
-      - "fix/**"
   pull_request:
     branches:
       - main
